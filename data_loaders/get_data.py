@@ -34,6 +34,7 @@ def get_collate_fn(name, hml_mode='train'):
 def get_dataset(name, num_frames, split='train', hml_mode='train'):
     DATA = get_dataset_class(name)
     if name in ["humanml", "kit"]:
+        # The num_frames will be ignored when used humanML and Kit dataset
         dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode)
     else:
         dataset = DATA(split=split, num_frames=num_frames)
