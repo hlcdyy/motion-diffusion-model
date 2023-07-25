@@ -27,7 +27,6 @@ def collate(batch):
     else:
         lenbatch = [len(b['inp'][0][0]) for b in notnone_batches]
 
-
     databatchTensor = collate_tensors(databatch)
     lenbatchTensor = torch.as_tensor(lenbatch)
     maskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
@@ -49,10 +48,23 @@ def collate(batch):
 
     # collate action textual names
     if 'action_text' in notnone_batches[0]:
-        action_text = [b['action_text']for b in notnone_batches]
+        action_text = [b['action_text'] for b in notnone_batches]
         cond['y'].update({'action_text': action_text})
 
+    # collate style motion and style motion lengths (style motion as another condition)
+    if 'sty_x' in notnone_batches[0]:
+        sty_x = [b["sty_x"] for b in notnone_batches]
+        sty_motion = collate_tensors(sty_x)
+        cond.update({'sty_x': sty_motion})
+
+        stylenbatch = [b['sty_lengths'] for b in notnone_batches]
+        stylenbatchTensor = torch.as_tensor(stylenbatch)
+        stymaskbatchTensor = lengths_to_mask(stylenbatchTensor, sty_motion.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
+        cond.update({"sty_y": {'mask': stymaskbatchTensor, 'lengths': stylenbatchTensor}})
+        
+
     return motion, cond
+ 
 
 # an adapter to our collate func
 def t2m_collate(batch):
@@ -64,5 +76,11 @@ def t2m_collate(batch):
         'lengths': b[5],  # motion length
     } for b in batch]
     return collate(adapted_batch)
+
+
+def t2m_style_collate(batch):
+    adapted_batch = [{
+        'inp': torch.
+    }]
 
 

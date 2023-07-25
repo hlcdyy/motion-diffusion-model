@@ -8,6 +8,7 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 
 import enum
 import math
+
 import numpy as np
 import torch
 import torch as th
@@ -1235,8 +1236,8 @@ class GaussianDiffusion:
         :param noise: if specified, the specific Gaussian noise to try to remove.
         :return: a dict with the key "loss" containing a tensor of shape [N].
                  Some mean or variance settings may also have other keys.
-        """
-
+        """             
+                                                
         # enc = model.model._modules['module']
         enc = model.model
         mask = model_kwargs['y']['mask']

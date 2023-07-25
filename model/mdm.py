@@ -136,7 +136,7 @@ class StyEncoder(nn.Module):
         self.nfeats = nfeats
         self.input_feats = self.njoints * self.nfeats
         
-        self.input_process = InputProcess(self.data_rep, self.input_feats, self.latent_dim) # Seq B d
+        # self.input_process = InputProcess(self.data_rep, self.input_feats, self.latent_dim) # Seq B d
         
         self.conv1 = nn.Conv1d(self.latent_dim, self.latent_dim, kernel_size=9, stride=1, 
                                padding='same', padding_mode='reflect')
@@ -147,10 +147,10 @@ class StyEncoder(nn.Module):
 
     def forward(self, x, y=None):
         """
-        x: [batch_size, njoints, nfeats, max_frames], denoted style motion representation
+        x: [Seq, Batch_size, latent_dim], denoted style motion representation
         y: conditons include motion mask
         """
-        x = self.input_process(x) # Seq B d
+        # x = self.input_process(x) # Seq B d
         x = x.permute(1, 2, 0)
         if y is not None:
             motion_mask = y["mask"].squeeze(1) # B 1 1 Maxleng
@@ -389,6 +389,7 @@ class MDM(nn.Module):
 
         x = self.input_process(x)
         if sty_x is not None:
+            sty_x = self.input_process(sty_x) # seq bs d
             sty_feat, adaIN_mask = self.sty_enc(sty_x, sty_y)
             adaIN_para = self.adaIN(sty_feat, adaIN_mask)
         else:
@@ -399,7 +400,6 @@ class MDM(nn.Module):
             # adding the timestep embed
             xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
             xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
-          
             output = self.seqTransEncoder(xseq, adaIN_para)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
 
         elif self.arch == 'trans_dec':

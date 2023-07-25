@@ -8,7 +8,15 @@ def load_model_wo_clip(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     # print([k for k in missing_keys if not k.startswith('clip_model.')])
     assert len(unexpected_keys) == 0
-    assert all([k.startswith('clip_model.') for k in missing_keys])
+    # assert all([k.startswith('clip_model.') for k in missing_keys])
+    assert all([k.startswith('clip_model.') or 
+                k.startswith('sty_enc.') or 
+                k.startswith('adaIN.') for k in missing_keys])
+
+# def load_finetune_model(model, state_dict):
+#     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+#     assert len(unexpected_keys) == 0
+#     assert all
 
 
 def create_model_and_diffusion(args, data):
