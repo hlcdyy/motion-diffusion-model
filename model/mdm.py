@@ -42,7 +42,9 @@ class StyleTransformerLayer(nn.TransformerEncoderLayer):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation, layer_norm_eps, batch_first, norm_first, device, dtype)
         self.ins_norm = nn.InstanceNorm1d(d_model, affine=False)
 
-    def forward(self, src: torch.Tensor, src_mask: Optional[torch.Tensor] = None, src_key_padding_mask: Optional[torch.Tensor] = None, adain_para = None) -> torch.Tensor:
+    def forward(self, src: torch.Tensor,  adaIN_para: Optional[torch.Tensor] = None,
+                src_mask: Optional[torch.Tensor] = None, 
+                src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         r"""Pass the input through the encoder layer.
 
         Args:
@@ -62,20 +64,169 @@ class StyleTransformerLayer(nn.TransformerEncoderLayer):
             x = x + self._ff_block(self.norm2(x))
         else:
             x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask))
-            x = self.norm2(x + self._ff_block(x, adain_para))
+            x = self.norm2(x + self._ff_block(x, adaIN_para))
 
         return x
 
     # feed forward block
-    def _ff_block(self, x: torch.Tensor, adain_para=None) -> torch.Tensor: # x: seq bs d
+    def _ff_block(self, x: torch.Tensor, adaIN_para=None) -> torch.Tensor: # x: seq bs d
+        """
+        x: content motion code: [seq, bs, d]
+        sty_x: style motion code: [batch_size, njoints, nfeats, max_frames]
+        """
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        if adain_para is not None:
+        if adaIN_para is not None:
             x = x.permute(1, 2, 0)
-            gamma, beta = adain_para
-            x = gamma * self.ins_norm(x) + beta
+            gamma, beta = adaIN_para
+            x = (gamma + 1) * self.ins_norm(x) + beta
             x = x.permute(2, 0, 1)
+   
         return self.dropout2(x)
+    
 
+class StyleTransformerEncoder(nn.TransformerEncoder):
+    r"""TransformerEncoder is a stack of N encoder layers
+
+    Args:
+        encoder_layer: an instance of the TransformerEncoderLayer() class (required).
+        num_layers: the number of sub-encoder-layers in the encoder (required).
+        norm: the layer normalization component (optional).
+
+    Examples::
+        >>> encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
+        >>> transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
+        >>> src = torch.rand(10, 32, 512)
+        >>> out = transformer_encoder(src)
+    """
+    
+    def __init__(self, encoder_layer, num_layers, norm=None):
+        super().__init__(encoder_layer, num_layers, norm)   
+
+    def forward(self, src: torch.Tensor, adaIN_para: Optional[torch.Tensor] = None, 
+                mask: Optional[torch.Tensor] = None, 
+                src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        r"""Pass the input through the encoder layers in turn.
+
+        Args:
+            src: the sequence to the encoder (required).
+            mask: the mask for the src sequence (optional).
+            src_key_padding_mask: the mask for the src keys per batch (optional).
+
+        Shape:
+            see the docs in Transformer class.
+        """
+        output = src
+
+        for mod in self.layers:
+            output = mod(output, adaIN_para, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
+
+        if self.norm is not None:
+            output = self.norm(output)
+
+        return output
+
+
+
+class StyEncoder(nn.Module):
+    def __init__(self, data_rep, njoints, nfeats, latent_dim=512) -> None:
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.data_rep = data_rep
+        self.njoints = njoints
+        self.nfeats = nfeats
+        self.input_feats = self.njoints * self.nfeats
+        
+        self.input_process = InputProcess(self.data_rep, self.input_feats, self.latent_dim) # Seq B d
+        
+        self.conv1 = nn.Conv1d(self.latent_dim, self.latent_dim, kernel_size=9, stride=1, 
+                               padding='same', padding_mode='reflect')
+        self.conv2 = nn.Conv1d(self.latent_dim, self.latent_dim, kernel_size=9, stride=1, 
+                               padding='same', padding_mode='reflect')
+        self.maxpool = nn.MaxPool1d(2, 2)
+        self.activation = nn.GELU()
+
+    def forward(self, x, y=None):
+        """
+        x: [batch_size, njoints, nfeats, max_frames], denoted style motion representation
+        y: conditons include motion mask
+        """
+        x = self.input_process(x) # Seq B d
+        x = x.permute(1, 2, 0)
+        if y is not None:
+            motion_mask = y["mask"].squeeze(1) # B 1 1 Maxleng
+            motion_mask = self.maxpool(self.maxpool(motion_mask))
+        else:
+            motion_mask = None
+        x = self.maxpool(self.activation(self.conv1(x)))
+        x = self.maxpool(self.activation(self.conv2(x)))
+   
+        return x, motion_mask
+               
+
+# class AdaIN(nn.Module):
+#     def __init__(self, latent_dim, num_features):
+#         super().__init__()
+        
+#         self.adaptpool = nn.AdaptiveAvgPool1d(1)
+#         self.to_latent = nn.Sequential(
+#                                        nn.Conv1d(num_features, latent_dim, 1, 1, 0),
+#                                        nn.GELU())
+#         self.inject = nn.Sequential(nn.Linear(latent_dim, latent_dim),
+#                                     nn.GELU(),
+#                                     nn.Linear(latent_dim, num_features*2))
+#         self.norm = nn.InstanceNorm1d(num_features, affine=False)
+
+#     def forward(self, x, s, motion_mask=None):
+#         """
+#         Args:
+#             x: B C Seq
+#             s: B C Seq
+#         Returns:
+
+#         """
+#         if motion_mask is None:
+#             s = self.adaptpool(s)
+#         else:
+#             s = s * motion_mask
+#             s = s.sum(-1, keepdim=True)/motion_mask.sum(-1, keepdim=True)
+#         s = self.to_latent(s).squeeze(-1)   # B C
+#         h = self.inject(s)
+#         h = h.view(h.size(0), h.size(1), 1)
+#         gamma, beta = torch.chunk(h, chunks=2, dim=1)
+#         return (1 + gamma) * self.norm(x) + beta
+
+
+class AdaIN(nn.Module):
+    def __init__(self, latent_dim, num_features):
+        super().__init__()
+        
+        self.adaptpool = nn.AdaptiveAvgPool1d(1)
+        self.to_latent = nn.Sequential(
+                                       nn.Conv1d(num_features, latent_dim, 1, 1, 0),
+                                       nn.GELU())
+        self.inject = nn.Sequential(nn.Linear(latent_dim, latent_dim),
+                                    nn.GELU(),
+                                    nn.Linear(latent_dim, num_features*2))
+
+    def forward(self, s, motion_mask=None):
+        """
+        Args:
+            x: B C Seq
+            s: B C Seq
+        Returns:
+
+        """
+        if motion_mask is None:
+            s = self.adaptpool(s)
+        else:
+            s = s * motion_mask
+            s = s.sum(-1, keepdim=True)/motion_mask.sum(-1, keepdim=True)
+        s = self.to_latent(s).squeeze(-1)   # B C
+        h = self.inject(s)
+        h = h.view(h.size(0), h.size(1), 1)
+        gamma, beta = torch.chunk(h, chunks=2, dim=1)
+        return (gamma, beta)
+        
 
 
 class MDM(nn.Module):
@@ -122,7 +273,11 @@ class MDM(nn.Module):
 
         self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
         self.emb_trans_dec = emb_trans_dec
-
+        
+        self.sty_enc = StyEncoder(self.data_rep, self.njoints, self.nfeats, self.latent_dim)
+        self.adaIN = AdaIN(self.latent_dim, self.latent_dim)
+        
+        
         if self.arch == 'trans_enc':
             print("TRANS_ENC init")
             seqTransEncoderLayer = StyleTransformerLayer(d_model=self.latent_dim,
@@ -131,7 +286,7 @@ class MDM(nn.Module):
                                                               dropout=self.dropout,
                                                               activation=self.activation)
 
-            self.seqTransEncoder = nn.TransformerEncoder(seqTransEncoderLayer,
+            self.seqTransEncoder = StyleTransformerEncoder(seqTransEncoderLayer,
                                                          num_layers=self.num_layers)
         elif self.arch == 'trans_dec':
             print("TRANS_DEC init")
@@ -209,7 +364,7 @@ class MDM(nn.Module):
             texts = clip.tokenize(raw_text, truncate=True).to(device) # [bs, context_length] # if n_tokens > 77 -> will truncate
         return self.clip_model.encode_text(texts).float()
 
-    def forward(self, x, timesteps, y=None):
+    def forward(self, x, timesteps, y=None, sty_x=None, sty_y=None):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
@@ -233,12 +388,19 @@ class MDM(nn.Module):
             x = torch.cat((x_reshaped, emb_gru), axis=1)  #[bs, d+joints*feat, 1, #frames]
 
         x = self.input_process(x)
+        if sty_x is not None:
+            sty_feat, adaIN_mask = self.sty_enc(sty_x, sty_y)
+            adaIN_para = self.adaIN(sty_feat, adaIN_mask)
+        else:
+            adaIN_para = None
+        
 
         if self.arch == 'trans_enc':
             # adding the timestep embed
             xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
             xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
-            output = self.seqTransEncoder(xseq)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+          
+            output = self.seqTransEncoder(xseq, adaIN_para)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
 
         elif self.arch == 'trans_dec':
             if self.emb_trans_dec:
@@ -371,3 +533,16 @@ class EmbedAction(nn.Module):
         idx = input[:, 0].to(torch.long)  # an index array must be long
         output = self.action_embedding[idx]
         return output
+    
+
+if __name__ == "__main__":
+    style_enc = StyEncoder('hml_vec', 1, 263, 512)
+    adain = AdaIN(512, 512)
+    x = torch.randn([32, 1, 263, 196])
+    cond_x = torch.randn((32, 512, 196))
+    x_mask = {"mask":torch.from_numpy(np.ones((32,196))).float().unsqueeze(1).unsqueeze(1)}
+    print(x_mask["mask"].dtype)
+    y, motion_mask = style_enc(x, x_mask)
+    print(y.shape, motion_mask.shape) 
+    y = adain(cond_x, y, motion_mask)
+    print(y.shape)
