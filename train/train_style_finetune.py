@@ -6,15 +6,15 @@ Train a diffusion model on images.
 import os
 import json
 from utils.fixseed import fixseed
-from utils.parser_util import train_args
+from utils.parser_util import finetune_style_args
 from utils import dist_util
-from train.training_loop import TrainLoop
+from train.training_loop import TrainLoop_Style
 from data_loaders.get_data import get_dataset_loader
 from utils.model_util import create_model_and_diffusion
 from train.train_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform  # required for the eval operation
 
 def main():
-    args = train_args()
+    args = finetune_style_args()
     fixseed(args.seed)
     train_platform_type = eval(args.train_platform_type)
     train_platform = train_platform_type(args.save_dir)
@@ -33,16 +33,17 @@ def main():
     dist_util.setup_dist(args.device)
 
     print("creating data loader...")
-    data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
+    t2m_data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
+    style_data = get_dataset_loader(name=args.style_dataset, batch_size=args.batch_size, num_frames=args.num_frames)
 
     print("creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(args, data)
+    model, diffusion = create_model_and_diffusion(args, t2m_data)
     model.to(dist_util.dev())
     model.rot2xyz.smpl_model.eval()
 
     print('Total params: %.2fM' % (sum(p.numel() for p in model.parameters_wo_clip()) / 1000000.0))
     print("Training...")
-    TrainLoop(args, train_platform, model, diffusion, data).run_loop()
+    TrainLoop_Style(args, train_platform, model, diffusion, t2m_data, style_data).run_loop()
     train_platform.close()
 
 if __name__ == "__main__":

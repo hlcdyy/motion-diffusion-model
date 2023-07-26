@@ -53,7 +53,8 @@ def get_opt(opt_path, device):
     opt.save_root = pjoin(opt.checkpoints_dir, opt.dataset_name, opt.name)
     opt.model_dir = pjoin(opt.save_root, 'model')
     opt.meta_dir = pjoin(opt.save_root, 'meta')
-
+    
+    # using under options
     if opt.dataset_name == 't2m':
         opt.data_root = '/data/hulei/OpenProjects/HumanML3D/HumanML3D' # use our revised representation
         opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
@@ -68,6 +69,15 @@ def get_opt(opt_path, device):
         opt.joints_num = 21
         opt.dim_pose = 251
         opt.max_motion_length = 196
+    elif opt.dataset_name == 'style100':
+        opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/style100_data/'
+        opt.t2m_root = '/data/hulei/OpenProjects/HumanML3D/HumanML3D'
+        opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
+        opt.text_description = './data_loaders/style100/Dataset_List.csv'
+        opt.joints_num = 22
+        opt.dim_pose = 263
+        opt.max_motion_length = 196
+    
     else:
         raise KeyError('Dataset not recognized')
 

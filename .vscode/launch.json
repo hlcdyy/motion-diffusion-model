@@ -1,0 +1,26 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: train_style_finetune",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            // "program": "${config:python.pythonPath}",
+            "module": "train.train_style_finetune",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+            //   "-m", "train.train_style_finetune"
+              "--save_dir", "save/finetune_style100",
+              "--dataset", "humanml",
+              "--style_dataset", "style100",
+              "--resume_checkpoint", "save/my_humanml_trans_enc_512",
+              "--overwrite"
+            ]
+        }
+    ]
+}
