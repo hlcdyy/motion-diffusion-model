@@ -202,6 +202,48 @@ class Text2MotionDataset(data.Dataset):
 
         return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length
 
+''' For use'''
+class StyleMotionDataset(data.Dataset):
+    def __init__(self, opt, mean, std, split, w_vectorizer):
+        self.opt = opt
+        self.w_vectorizer = w_vectorizer
+        self.max_length = 20
+        self.pointer = 0
+        self.max_motion_length = opt.max_motion_length
+        min_motion_len = 40 if self.opt.dataset_name =='style100' else 24
+        
+        data_dict = {}
+
+        if self.opt.dataset_name =='style100':
+            from dataset.style100_split import train_list, test_list
+            import pandas as pd
+            style_names = eval(split+'_list')
+        
+        files = os.listdir(opt.motion_dir)
+        for file in files:
+            style = file.split('_')[0]
+            if style in style_names:
+                try:
+                    motion = np.load(pjoin(opt.motion_dir, file))
+                    if len(motion) < min_motion_len:
+                        continue
+                    text_data = []
+                    style_csv = pd.read_csv(opt.text_description)
+                    ind = style_csv.index[style_csv['Style Name'] == style][0]
+                    description = style_csv.loc[ind]['Description']
+                    if len(motion) >= 200:
+                        # start window sliding
+                        i = 0
+                        while 
+
+
+                except:
+                    pass
+
+
+        
+        
+        
 
 '''For use of training text motion matching model, and evaluations'''
 class Text2MotionDatasetV2(data.Dataset):
@@ -776,6 +818,7 @@ class HumanML3D(data.Dataset):
         return self.t2m_dataset.__len__()
 
 
+
 # A wrapper class for t2m+style_transfer purposes
 class HumanML3D_Style(data.Dataset):
     def __init__(self, mode, datapath='./dataset/humanml_opt.txt', split="train", **kwargs):
@@ -820,7 +863,7 @@ class HumanML3D_Style(data.Dataset):
             self.t2m_dataset = TextOnlyDataset(self.opt, self.mean, self.std, self.split_file)
         else:
             self.w_vectorizer = WordVectorizer(pjoin(abs_base_path, 'glove'), 'our_vab')
-            self.t2m_dataset = Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer)
+            self.t2m_dataset = StyleMotionDataset(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer)
             self.num_actions = 1 # dummy placeholder
 
         assert len(self.t2m_dataset) > 1, 'You loaded an empty dataset, ' \
