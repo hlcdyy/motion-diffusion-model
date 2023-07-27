@@ -16,6 +16,7 @@ from copy import deepcopy
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood
 from data_loaders.humanml.scripts import motion_process
+from copy import deepcopy
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -134,6 +135,11 @@ class GaussianDiffusion:
         lambda_root_vel=0.,
         lambda_vel_rcxyz=0.,
         lambda_fc=0.,
+        lambda_sty_cons = 0.,
+        lambda_sty_trans = 0.,
+        lambda_cont_pers = 0.,
+        lambda_cont_vel = 0.
+        
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -152,6 +158,11 @@ class GaussianDiffusion:
         self.lambda_root_vel = lambda_root_vel
         self.lambda_vel_rcxyz = lambda_vel_rcxyz
         self.lambda_fc = lambda_fc
+
+        self.lambda_sty_cons = lambda_sty_cons
+        self.lambda_sty_trans = lambda_sty_trans
+        self.lambda_cont_pers = lambda_cont_pers
+        self.lambda_cont_vel = lambda_cont_vel
 
         if self.lambda_rcxyz > 0. or self.lambda_vel > 0. or self.lambda_root_vel > 0. or \
                 self.lambda_vel_rcxyz > 0. or self.lambda_fc > 0.:
@@ -1240,6 +1251,7 @@ class GaussianDiffusion:
                                                 
         # enc = model.model._modules['module']
         enc = model.model
+        
         mask = model_kwargs['y']['mask']
         get_xyz = lambda sample: enc.rot2xyz(sample, mask=None, pose_rep=enc.pose_rep, translation=enc.translation,
                                              glob=enc.glob,
@@ -1340,6 +1352,57 @@ class GaussianDiffusion:
                 terms["vel_mse"] = self.masked_l2(target_vel[:, :-1, :, :], # Remove last joint, is the root location!
                                                   model_output_vel[:, :-1, :, :],
                                                   mask[:, :, :, 1:])  # mean_flat((target_vel - model_output_vel) ** 2)
+            
+            # loss terms for style transfer
+            # 1. style consistency loss, ouput same style code if motions from same style type
+            # 2. style transfer loss, t2m motion should has the same motion style code
+            # 3. content perserving, using self style code generate t2m ground truth motion
+            # 4. perserving t2m data content, we encourage the ouput motion has the same global joint velocity direction as t2m ground truth.
+            if model_kwargs.get('sty_x', None) is not None:
+                sty_motion = model_kwargs['sty_x']
+                sty_label = model_kwargs["sty_y"]
+                sty_motion = enc.input_process(sty_motion) # seq bs d
+                sty_feat, adaIN_mask = enc.sty_enc(sty_motion, sty_label)
+                input_sty_para = enc.adaIN(sty_feat, adaIN_mask)
+                mse = torch.nn.MSELoss()
+
+            if self.lambda_sty_cons > 0. and model_kwargs.get('sty_x', None) is not None:
+                # the repeated style motions should have the similar style codes
+                
+                
+            
+            if self.lambda_sty_trans > 0. and model_kwargs.get('sty_x', None) is not None:
+                # At this time model_output is style transfered motion.
+                out_motion = enc.input_process(model_output) 
+                sty_feat, adaIN_mask = enc.sty_enc(out_motion, model_kwargs["y"])
+                transfered_sty_para = enc.adaIN(sty_feat, adaIN_mask) 
+                terms["sty_trans_mse"] = mse(input_sty_para[0], transfered_sty_para[0]) + mse(input_sty_para[1], input_sty_para[1])
+
+
+            if self.lambda_cont_pers > 0. and model_kwargs.get('sty_x', None) is not None:
+                # the new_model_output should be consistent with x_start
+                new_model_kwarags = deepcopy(model_kwargs)
+                new_model_kwarags["sty_x"] = x_start
+                new_model_kwarags["sty_y"] = model_kwargs["y"]
+                new_model_output = model(x_t, self._scale_timesteps(t), **new_model_kwarags)
+                terms["rot_mse"] = self.masked_l2(target, new_model_output, mask)
+                
+                
+            if self.lambda_cont_vel > 0. and model_kwargs.get('sty_x', None) is not None:
+                denorm_model_output = dataset.inv_transform(model_output) # B C 1 T 
+                t2m_gt_motion = dataset.inv_transform(x_start)
+                # velocity direction on xz plane
+                gt_vel = t2m_gt_motion[:, 1:3, ...]
+                out_vel = denorm_model_output[:, 1:3, ...]
+                gt_vel_direction = gt_vel / (torch.norm(gt_vel, p=2, dim=1, keepdim=True) + 1e-8)
+                out_vel_direction = out_vel / (torch.norm(out_vel, p=2, dim=1, keepdim=True) + 1e-8)
+                vel_loss = self.masked_l2(gt_vel_direction, out_vel_direction, mask)
+                # rvelocity direction 
+                rvel_loss = self.masked_l2(torch.sign(t2m_gt_motion[:, :1, ...]),
+                                           torch.sign(denorm_model_output[:, :1, ...]), 
+                                           mask)
+                terms["cont_vel_mse"] = vel_loss + rvel_loss
+            
 
             terms["loss"] = terms["rot_mse"] + terms.get('vb', 0.) +\
                             (self.lambda_vel * terms.get('vel_mse', 0.)) +\

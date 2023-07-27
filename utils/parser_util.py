@@ -93,6 +93,12 @@ def add_model_options(parser):
     group.add_argument("--unconstrained", action='store_true',
                        help="Model is trained unconditionally. That is, it is constrained by neither text nor action. "
                             "Currently tested on HumanAct12 only.")
+    
+    group.add_argument("--lambda_sty_cons", default=0.0, type=float, help="style consistent loss, motions from same style should have same style code.")
+    group.add_argument("--lambda_sty_trans", default=0.0, type=float, help="style transfer loss, output motion should have the same style code with style motion.")
+    group.add_argument("--lambda_cont_pers", default=0.0, type=float, help="content perserving loss, t2m motion generating with its own style should output t2m ground truth motion.")
+    group.add_argument("--lambda_cont_vel", default=0.0, type=float, help="the transfered motion should have the same velocity direction with content motion")
+    
 
 
 
@@ -172,7 +178,8 @@ def add_finetune_style_options(parser):
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--resume_checkpoint", required=True, type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file). if is directory, then find the latest file")
-
+    
+    
 def add_sampling_options(parser):
     group = parser.add_argument_group('sampling')
     group.add_argument("--model_path", required=True, type=str,
