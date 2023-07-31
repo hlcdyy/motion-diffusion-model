@@ -70,7 +70,9 @@ def extract_features(positions, feet_thre, n_raw_offsets, kinematic_chain, face_
         positions[..., 0] -= positions[:, 0:1, 0]
         positions[..., 2] -= positions[:, 0:1, 2]
         '''All pose face Z+'''
-        positions = qrot_np(np.repeat(r_rot[:, None], positions.shape[1], axis=1), positions)
+        # revised by HL
+        positions = qrot_np(np.repeat(qinv_np(r_rot)[:, None], positions.shape[1], axis=1), positions)
+        # positions = qrot_np(np.repeat(r_rot[:, None], positions.shape[1], axis=1), positions)
         return positions
 
     def get_quaternion(positions):
@@ -152,7 +154,7 @@ def extract_features(positions, feet_thre, n_raw_offsets, kinematic_chain, face_
 
     '''Get Joint Velocity Representation'''
     # (seq_len-1, joints_num*3)
-    local_vel = qrot_np(np.repeat(r_rot[:-1, None], global_positions.shape[1], axis=1),
+    local_vel = qrot_np(np.repeat(qinv_np(r_rot)[:-1, None], global_positions.shape[1], axis=1),
                         global_positions[1:] - global_positions[:-1])
     local_vel = local_vel.reshape(len(local_vel), -1)
 
@@ -255,7 +257,7 @@ def process_file(positions, feet_thre):
         positions[..., 0] -= positions[:, 0:1, 0]
         positions[..., 2] -= positions[:, 0:1, 2]
         '''All pose face Z+'''
-        positions = qrot_np(np.repeat(r_rot[:, None], positions.shape[1], axis=1), positions)
+        positions = qrot_np(np.repeat(qinv_np(r_rot)[:, None], positions.shape[1], axis=1), positions)
         return positions
 
     def get_quaternion(positions):
@@ -337,7 +339,7 @@ def process_file(positions, feet_thre):
 
     '''Get Joint Velocity Representation'''
     # (seq_len-1, joints_num*3)
-    local_vel = qrot_np(np.repeat(r_rot[:-1, None], global_positions.shape[1], axis=1),
+    local_vel = qrot_np(np.repeat(qinv_np(r_rot)[:-1, None], global_positions.shape[1], axis=1),
                         global_positions[1:] - global_positions[:-1])
     local_vel = local_vel.reshape(len(local_vel), -1)
 
@@ -373,7 +375,9 @@ def recover_root_rot_pos(data):
     r_pos = torch.zeros(data.shape[:-1] + (3,)).to(data.device)
     r_pos[..., 1:, [0, 2]] = data[..., :-1, 1:3]
     '''Add Y-axis rotation to root position'''
-    r_pos = qrot(qinv(r_rot_quat), r_pos)
+    
+    # Revised by HL
+    r_pos = qrot(r_rot_quat, r_pos)
 
     r_pos = torch.cumsum(r_pos, dim=-2)
 
@@ -418,7 +422,9 @@ def recover_from_ric(data, joints_num):
     positions = positions.view(positions.shape[:-1] + (-1, 3))
 
     '''Add Y-axis rotation to local joints'''
-    positions = qrot(qinv(r_rot_quat[..., None, :]).expand(positions.shape[:-1] + (4,)), positions)
+    # positions = qrot(qinv(r_rot_quat[..., None, :]).expand(positions.shape[:-1] + (4,)), positions)
+    # revised by HL
+    positions = qrot(r_rot_quat[..., None, :].expand(positions.shape[:-1] + (4, )), positions)
 
     '''Add root XZ to joints'''
     positions[..., 0] += r_pos[..., 0:1]

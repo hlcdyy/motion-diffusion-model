@@ -108,7 +108,7 @@ def add_data_options(parser):
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-
+    
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -271,6 +271,21 @@ def finetune_style_args():
     add_finetune_style_options(parser) # lr, save_dir, style dataset
     return parser.parse_args()
 
+def style_transfer_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_generate_options(parser)
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args)
+    
+    if (args.input_text or args.text_prompt) and cond_mode != 'text':
+        raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
+    elif (args.action_file or args.action_name) and cond_mode != 'action':
+        raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
+
+    return args
+    
+
 def generate_args():
     parser = ArgumentParser()
     # args specified by the user: (all other will be loaded from the model)
@@ -286,6 +301,7 @@ def generate_args():
         raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
 
     return args
+
 
 
 def edit_args():

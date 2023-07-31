@@ -938,7 +938,7 @@ class HumanML3D_Style(data.Dataset):
 
         
         self.split = split
-        if mode in ['train', 'eval']:
+        if mode in ['train', 'eval', 'text_only']:
             self.style_dataset = StyleMotionDataset(self.opt, self.mean, self.std, self.split, offset=40)
                                
         assert len(self.style_dataset) > 1, 'You loaded an empty dataset, ' \

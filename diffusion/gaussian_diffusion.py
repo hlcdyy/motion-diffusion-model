@@ -17,6 +17,7 @@ from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood
 from data_loaders.humanml.scripts import motion_process
 from copy import deepcopy
+from collections import Counter
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -1251,7 +1252,6 @@ class GaussianDiffusion:
                                                 
         # enc = model.model._modules['module']
         enc = model.model
-        
         mask = model_kwargs['y']['mask']
         get_xyz = lambda sample: enc.rot2xyz(sample, mask=None, pose_rep=enc.pose_rep, translation=enc.translation,
                                              glob=enc.glob,
@@ -1364,12 +1364,29 @@ class GaussianDiffusion:
                 sty_motion = enc.input_process(sty_motion) # seq bs d
                 sty_feat, adaIN_mask = enc.sty_enc(sty_motion, sty_label)
                 input_sty_para = enc.adaIN(sty_feat, adaIN_mask)
+                mean = torch.from_numpy(dataset.mean).to(sty_motion.device).unsqueeze(-1).unsqueeze(-1)
+                std = torch.from_numpy(dataset.std).to(sty_motion.device).unsqueeze(-1).unsqueeze(-1)
                 mse = torch.nn.MSELoss()
 
             if self.lambda_sty_cons > 0. and model_kwargs.get('sty_x', None) is not None:
                 # the repeated style motions should have the similar style codes
-                
-                
+                sty_y = model_kwargs["sty_y"]
+                sty_name = sty_y["style"]
+                input_sty_mean, input_sty_std = input_sty_para
+                cnt = Counter(sty_name)
+                sty_name = np.array(sty_name)
+                repeated_keys = []
+                for key, value in cnt.items():
+                    if value > 1:
+                        repeated_keys.append(key)
+                terms["sty_cons_mse"] = 0.
+                for key in repeated_keys:
+                    indices = np.where(sty_name==key)[0]
+                    err = torch.std(input_sty_mean[indices]) + torch.std(input_sty_std[indices])
+                    err = torch.mean(err)
+                    terms["sty_cons_mse"] += err
+                    
+
             
             if self.lambda_sty_trans > 0. and model_kwargs.get('sty_x', None) is not None:
                 # At this time model_output is style transfered motion.
@@ -1389,8 +1406,8 @@ class GaussianDiffusion:
                 
                 
             if self.lambda_cont_vel > 0. and model_kwargs.get('sty_x', None) is not None:
-                denorm_model_output = dataset.inv_transform(model_output) # B C 1 T 
-                t2m_gt_motion = dataset.inv_transform(x_start)
+                denorm_model_output = (model_output * std) + mean # B C 1 T 
+                t2m_gt_motion = (x_start * std) + mean
                 # velocity direction on xz plane
                 gt_vel = t2m_gt_motion[:, 1:3, ...]
                 out_vel = denorm_model_output[:, 1:3, ...]
@@ -1402,12 +1419,14 @@ class GaussianDiffusion:
                                            torch.sign(denorm_model_output[:, :1, ...]), 
                                            mask)
                 terms["cont_vel_mse"] = vel_loss + rvel_loss
-            
 
             terms["loss"] = terms["rot_mse"] + terms.get('vb', 0.) +\
                             (self.lambda_vel * terms.get('vel_mse', 0.)) +\
                             (self.lambda_rcxyz * terms.get('rcxyz_mse', 0.)) + \
-                            (self.lambda_fc * terms.get('fc', 0.))
+                            (self.lambda_fc * terms.get('fc', 0.)) + \
+                            (self.lambda_sty_cons * terms.get('sty_cons_mse', 0.)) + \
+                            (self.lambda_sty_trans * terms.get('sty_trans_mse', 0.)) + \
+                            (self.lambda_cont_vel * terms.get('cont_vel_mse', 0))
 
         else:
             raise NotImplementedError(self.loss_type)

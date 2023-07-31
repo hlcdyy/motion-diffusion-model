@@ -9,7 +9,7 @@
             "type": "python",
             "request": "launch",
             // "program": "${file}",
-            // "program": "${config:python.pythonPath}",
+            // "program": "${command:python.interpreterPath}",
             "module": "train.train_style_finetune",
             "console": "integratedTerminal",
             "justMyCode": true,
@@ -19,7 +19,14 @@
               "--dataset", "humanml",
               "--style_dataset", "style100",
               "--resume_checkpoint", "save/my_humanml_trans_enc_512",
-              "--overwrite"
+              "--overwrite", 
+              "--lambda_sty_cons", "1",
+              "--lambda_sty_trans", "1", 
+              "--lambda_cont_pers", "1",
+              "--lambda_cont_vel", "1",
+              "--num_steps", "80_000", 
+              "--save_interval", "1_000", 
+              "--lr", "1e-5",
             ]
         }
     ]

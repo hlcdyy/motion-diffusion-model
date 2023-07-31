@@ -405,42 +405,76 @@ class TrainLoop_Style:
                 self.t2m_data_cycle = cycle(self.t2m_data)
                 self.sty_data_cycle = self.sty_data
              
-             # for motion, cond in tqdm(self.data):
-            for t2m, sty in tqdm(zip(self.t2m_data_cycle, self.sty_data_cycle)):
-                motion, cond = t2m
-                sty_motion, sty_cond = sty
-                cond.update({"sty_x": sty_motion})
-                cond.update({"sty_y": sty_cond.pop("y")})
+             
+             
+            if np.random.rand() > 0.5:
+                for motion, cond in tqdm(self.t2m_data):
+            
+                    if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
+                        break
+                    
+                    motion = motion.to(self.device)
+                    cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
+                   
+                    self.run_step(motion, cond)
+                    if self.step % self.log_interval == 0:
+                        for k,v in logger.get_current().name2val.items():
+                            if k == 'loss':
+                                print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
+
+                            if k in ['step', 'samples'] or '_q' in k:
+                                continue
+                            else:
+                                self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
+
+                    if self.step % self.save_interval == 0:
+                        self.save()
+                        self.model.eval()
+                        self.evaluate()
+                        self.model.train()
+
+                        # Run for a finite amount of time in integration tests.
+                        if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
+                            return
+                    self.step += 1
+            else:
                 
-                if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
-                    break
-                
-                motion = motion.to(self.device)
-                cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
-                cond['sty_x'] = cond['sty_x'].to(self.device)
-                cond['sty_y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['sty_y'].items()}
+                # style transfer finetuning 
+                for t2m, sty in tqdm(zip(self.t2m_data_cycle, self.sty_data_cycle)):
+                    motion, cond = t2m
+                    sty_motion, sty_cond = sty
+                    cond.update({"sty_x": sty_motion})
+                    cond.update({"sty_y": sty_cond.pop("y")})
+                    
+                    if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
+                        break
+                    
+                    motion = motion.to(self.device)
+                    cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
+                    cond['sty_x'] = cond['sty_x'].to(self.device)
+                    cond['sty_y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['sty_y'].items()}
 
-                self.run_step(motion, cond)
-                if self.step % self.log_interval == 0:
-                    for k,v in logger.get_current().name2val.items():
-                        if k == 'loss':
-                            print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
+                    self.run_step(motion, cond)
+                    if self.step % self.log_interval == 0:
+                        for k,v in logger.get_current().name2val.items():
+                            if k == 'loss':
+                                print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
 
-                        if k in ['step', 'samples'] or '_q' in k:
-                            continue
-                        else:
-                            self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
+                            if k in ['step', 'samples'] or '_q' in k:
+                                continue
+                            else:
+                                self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
 
-                if self.step % self.save_interval == 0:
-                    self.save()
-                    self.model.eval()
-                    self.evaluate()
-                    self.model.train()
+                    if self.step % self.save_interval == 0:
+                        self.save()
+                        self.model.eval()
+                        self.evaluate()
+                        self.model.train()
 
-                    # Run for a finite amount of time in integration tests.
-                    if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                        return
-                self.step += 1
+                        # Run for a finite amount of time in integration tests.
+                        if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
+                            return
+                    self.step += 1
             if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
                 break
         # Save the last checkpoint if it wasn't already saved.

@@ -93,9 +93,9 @@ def create_gaussian_diffusion(args):
         lambda_vel=args.lambda_vel,
         lambda_rcxyz=args.lambda_rcxyz,
         lambda_fc=args.lambda_fc,
-        lambda_sty_cons = args.lambda_sty_cons
-        lambda_sty_trans = args.lambda_sty_trans
-        lambda_cont_pers = args.lambda_cont_pers
+        lambda_sty_cons = args.lambda_sty_cons, 
+        lambda_sty_trans = args.lambda_sty_trans,
+        lambda_cont_pers = args.lambda_cont_pers,
         lambda_cont_vel = args.lambda_cont_vel
         
     )
