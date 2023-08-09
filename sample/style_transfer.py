@@ -67,7 +67,7 @@ def main():
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
 
     print('Loading dataset...')
-    data = load_dataset(args, max_frames, n_frames)
+    data, sty_data = load_dataset(args, max_frames, n_frames)
     total_num_samples = args.num_samples * args.num_repetitions
 
     print("Creating model and diffusion...")
@@ -84,7 +84,14 @@ def main():
 
     if is_using_data:
         iterator = iter(data)
+        sty_iterator = iter(sty_data)
         _, model_kwargs = next(iterator)
+        sty_motion, sty_kwargs = next(sty_iterator)
+        model_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in model_kwargs["y"].items()}
+        model_kwargs["sty_x"] = sty_motion.to(dist_util.dev())
+        sty_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in sty_kwargs["y"].items()}
+        model_kwargs["sty_y"] = sty_kwargs["y"]
+        
     else:
         collate_args = [{'inp': torch.zeros(n_frames), 'tokens': None, 'lengths': n_frames}] * args.num_samples
         is_t2m = any([args.input_text, args.text_prompt])
@@ -101,6 +108,8 @@ def main():
     all_motions = []
     all_lengths = []
     all_text = []
+    all_sty_motions = []
+    all_sty_names = []
 
     for rep_i in range(args.num_repetitions):
         print(f'### Sampling [repetitions #{rep_i}]')
@@ -108,7 +117,7 @@ def main():
         # add CFG scale to batch
         if args.guidance_param != 1:
             model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
-
+        
         sample_fn = diffusion.p_sample_loop
 
         sample = sample_fn(
@@ -131,10 +140,19 @@ def main():
             sample = data.dataset.t2m_dataset.inv_transform(sample.cpu().permute(0, 2, 3, 1)).float()
             sample = recover_from_ric(sample, n_joints)
             sample = sample.view(-1, *sample.shape[2:]).permute(0, 2, 3, 1)
+        
+        if model_kwargs.get("sty_x", None) is not None:
+            sty_rep = data.dataset.t2m_dataset.inv_transform(sty_motion.cpu().permute(0, 2, 3, 1)) # B 1 T 263
+            sty_xyz = recover_from_ric(sty_rep, n_joints) # B T J 3
+            sty_xyz = sty_xyz.view(-1, *sty_xyz.shape[2:]).permute(0, 2, 3, 1)                                 
 
         rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
         rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
         sample = model.rot2xyz(x=sample, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
+                               jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
+                               get_rotations_back=False)
+        if model_kwargs.get("sty_x", None) is not None:
+            sty_xyz = model.rot2xyz(x=sty_xyz, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
                                jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
                                get_rotations_back=False)
 
@@ -144,16 +162,23 @@ def main():
             text_key = 'text' if 'text' in model_kwargs['y'] else 'action_text'
             all_text += model_kwargs['y'][text_key]
 
+        if model_kwargs.get("sty_x", None) is not None:
+            all_sty_motions.append(sty_xyz.cpu().numpy())
+            all_sty_names += model_kwargs['sty_y']["style"]
+
         all_motions.append(sample.cpu().numpy())
         all_lengths.append(model_kwargs['y']['lengths'].cpu().numpy())
 
         print(f"created {len(all_motions) * args.batch_size} samples")
 
 
-    all_motions = np.concatenate(all_motions, axis=0)
+    all_motions = np.concatenate(all_motions, axis=0)  # [num_repe, num_samples, njoints, 3, seqlen]
+    all_sty_motions = np.concatenate(all_sty_motions, axis=0)
+    all_sty_motions = all_sty_motions[:total_num_samples]
     all_motions = all_motions[:total_num_samples]  # [bs, njoints, 6, seqlen]
     all_text = all_text[:total_num_samples]
     all_lengths = np.concatenate(all_lengths, axis=0)[:total_num_samples]
+    all_sty_names = all_sty_names[:total_num_samples]
 
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
@@ -163,7 +188,8 @@ def main():
     print(f"saving results file to [{npy_path}]")
     np.save(npy_path,
             {'motion': all_motions, 'text': all_text, 'lengths': all_lengths,
-             'num_samples': args.num_samples, 'num_repetitions': args.num_repetitions})
+             'num_samples': args.num_samples, 'num_repetitions': args.num_repetitions,
+             'sty_motion': all_sty_motions, 'sty_name': all_sty_names})
     with open(npy_path.replace('.npy', '.txt'), 'w') as fw:
         fw.write('\n'.join(all_text))
     with open(npy_path.replace('.npy', '_len.txt'), 'w') as fw:
@@ -182,15 +208,23 @@ def main():
         rep_files = []
         for rep_i in range(args.num_repetitions):
             caption = all_text[rep_i*args.batch_size + sample_i]
+            sty_name = all_sty_names[rep_i*args.batch_size + sample_i]
             length = all_lengths[rep_i*args.batch_size + sample_i]
             motion = all_motions[rep_i*args.batch_size + sample_i].transpose(2, 0, 1)[:length]
+            if rep_i == 0:
+                sty_motion = all_sty_motions[rep_i*args.batch_size + sample_i].transpose(2, 0, 1) # T J 3
+                sty_motion = sty_motion[:sty_kwargs["y"]["length"][sample_i], ...]
+                save_sty_file = 'style_example{:02d}.mp4'.format(sample_i)
+                print('["{}" ({:02d})| -> {}]'.format(sty_name, sample_i, save_sty_file))
+                sty_save_path = os.path.join(out_path, save_sty_file)
+                plot_3d_motion(sty_save_path, skeleton, sty_motion, dataset=args.dataset, title=sty_name, fps=fps)
             save_file = sample_file_template.format(sample_i, rep_i)
-            print(sample_print_template.format(caption, sample_i, rep_i, save_file))
+            print(sample_print_template.format(caption + "+" + sty_name, sample_i, rep_i, save_file))
             animation_save_path = os.path.join(out_path, save_file)
-            plot_3d_motion(animation_save_path, skeleton, motion, dataset=args.dataset, title=caption, fps=fps)
+            plot_3d_motion(animation_save_path, skeleton, motion, dataset=args.dataset, title=caption+"+"+sty_name, fps=fps)
             # Credit for visualization: https://github.com/EricGuo5513/text-to-motion
             rep_files.append(animation_save_path)
-
+        
         sample_files = save_multiple_samples(args, out_path,
                                                row_print_template, all_print_template, row_file_template, all_file_template,
                                                caption, num_samples_in_out_file, rep_files, sample_files, sample_i)

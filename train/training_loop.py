@@ -404,8 +404,7 @@ class TrainLoop_Style:
             else:
                 self.t2m_data_cycle = cycle(self.t2m_data)
                 self.sty_data_cycle = self.sty_data
-             
-             
+                   
              
             if np.random.rand() > 0.5:
                 for motion, cond in tqdm(self.t2m_data):

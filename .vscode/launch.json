@@ -5,6 +5,26 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: sample_style_tranfer",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "sample.style_transfer",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                //   "-m", "train.train_style_finetune"
+                "--model_path",
+                "save/finetune_style100/model000620161.pt",
+                "--num_samples",
+                "1",
+                "--num_repetitions",
+                "3",
+                "--seed",
+                "20"
+            ]
+        },
+        {
             "name": "Python: train_style_finetune",
             "type": "python",
             "request": "launch",
@@ -14,19 +34,30 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-            //   "-m", "train.train_style_finetune"
-              "--save_dir", "save/finetune_style100",
-              "--dataset", "humanml",
-              "--style_dataset", "style100",
-              "--resume_checkpoint", "save/my_humanml_trans_enc_512",
-              "--overwrite", 
-              "--lambda_sty_cons", "1",
-              "--lambda_sty_trans", "1", 
-              "--lambda_cont_pers", "1",
-              "--lambda_cont_vel", "1",
-              "--num_steps", "80_000", 
-              "--save_interval", "1_000", 
-              "--lr", "1e-5",
+                //   "-m", "train.train_style_finetune"
+                "--save_dir",
+                "save/finetune_style100",
+                "--dataset",
+                "humanml",
+                "--style_dataset",
+                "style100",
+                "--resume_checkpoint",
+                "save/my_humanml_trans_enc_512",
+                "--overwrite",
+                "--lambda_sty_cons",
+                "1",
+                "--lambda_sty_trans",
+                "1",
+                "--lambda_cont_pers",
+                "1",
+                "--lambda_cont_vel",
+                "1",
+                "--num_steps",
+                "80_000",
+                "--save_interval",
+                "1_000",
+                "--lr",
+                "1e-5",
             ]
         }
     ]

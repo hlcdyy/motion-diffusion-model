@@ -196,6 +196,25 @@ def add_sampling_options(parser):
                        help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
 
 
+def add_stytransfer_options(parser):
+    group = parser.add_argument_group('sty_transferring')
+    group.add_argument("--model_path", required=True, type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--output_dir", default='', type=str,
+                       help="Path to results dir (auto created by the script). "
+                            "If empty, will create dir in parallel to checkpoint.")
+    group.add_argument("--num_samples", default=10, type=int,
+                       help="Maximal number of prompts to sample, "
+                            "if loading dataset from file, this field will be ignored.")
+    group.add_argument("--num_repetitions", default=3, type=int,
+                       help="Number of repetitions, per sample (text prompt/action)")
+    group.add_argument("--guidance_param", default=2.5, type=float,
+                       help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
+    group.add_argument("--style_dataset", default='style100', choices=['style100'], type=str,
+                       help="Dataset name (choose from list).")
+    
+    
+
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
     group.add_argument("--motion_length", default=6.0, type=float,
@@ -274,6 +293,7 @@ def finetune_style_args():
 def style_transfer_args():
     parser = ArgumentParser()
     add_base_options(parser)
+    add_stytransfer_options(parser)
     add_generate_options(parser)
     args = parse_and_load_from_model(parser)
     cond_mode = get_cond_mode(args)

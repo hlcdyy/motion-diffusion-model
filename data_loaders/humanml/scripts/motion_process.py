@@ -419,7 +419,7 @@ def recover_rot(data):
 def recover_from_ric(data, joints_num):
     r_rot_quat, r_pos = recover_root_rot_pos(data)
     positions = data[..., 4:(joints_num - 1) * 3 + 4]
-    positions = positions.view(positions.shape[:-1] + (-1, 3))
+    positions = positions.view(positions.shape[:-1] + (-1, 3)) 
 
     '''Add Y-axis rotation to local joints'''
     # positions = qrot(qinv(r_rot_quat[..., None, :]).expand(positions.shape[:-1] + (4,)), positions)
@@ -433,7 +433,7 @@ def recover_from_ric(data, joints_num):
     '''Concate root and joints'''
     positions = torch.cat([r_pos.unsqueeze(-2), positions], dim=-2)
 
-    return positions
+    return positions # B T J 3
 '''
 For Text2Motion Dataset
 '''
