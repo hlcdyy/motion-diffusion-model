@@ -17,11 +17,11 @@
                 "--model_path",
                 "save/finetune_style100/model000620161.pt",
                 "--num_samples",
-                "1",
+                "5",
                 "--num_repetitions",
                 "3",
                 "--seed",
-                "20"
+                "10"
             ]
         },
         {

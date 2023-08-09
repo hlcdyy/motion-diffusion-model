@@ -17,6 +17,7 @@ import data_loaders.humanml.utils.paramUtil as paramUtil
 from data_loaders.humanml.utils.plot_script import plot_3d_motion
 import shutil
 from data_loaders.tensors import collate
+from copy import deepcopy
 
 
 def main():
@@ -88,6 +89,7 @@ def main():
         _, model_kwargs = next(iterator)
         sty_motion, sty_kwargs = next(sty_iterator)
         model_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in model_kwargs["y"].items()}
+        model_rawkwargs = deepcopy(model_kwargs)
         model_kwargs["sty_x"] = sty_motion.to(dist_util.dev())
         sty_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in sty_kwargs["y"].items()}
         model_kwargs["sty_y"] = sty_kwargs["y"]
@@ -110,6 +112,7 @@ def main():
     all_text = []
     all_sty_motions = []
     all_sty_names = []
+    all_motions_wosty =[]
 
     for rep_i in range(args.num_repetitions):
         print(f'### Sampling [repetitions #{rep_i}]')
@@ -117,6 +120,7 @@ def main():
         # add CFG scale to batch
         if args.guidance_param != 1:
             model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
+            model_rawkwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
         
         sample_fn = diffusion.p_sample_loop
 
@@ -133,6 +137,21 @@ def main():
             noise=None,
             const_noise=False,
         )
+        
+        sample_wosty = sample_fn(
+            model,
+            # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
+            (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+            clip_denoised=False,
+            model_kwargs=model_rawkwargs,
+            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+            init_image=None,
+            progress=True,
+            dump_steps=None,
+            noise=None,
+            const_noise=False,
+        )
+          
 
         # Recover XYZ *positions* from HumanML3D vector representation
         if model.data_rep == 'hml_vec':
@@ -140,6 +159,10 @@ def main():
             sample = data.dataset.t2m_dataset.inv_transform(sample.cpu().permute(0, 2, 3, 1)).float()
             sample = recover_from_ric(sample, n_joints)
             sample = sample.view(-1, *sample.shape[2:]).permute(0, 2, 3, 1)
+
+            sample_wosty = data.dataset.t2m_dataset.inv_transform(sample_wosty.cpu().permute(0, 2, 3, 1)).float()
+            sample_wosty = recover_from_ric(sample_wosty, n_joints)
+            sample_wosty = sample_wosty.view(-1, *sample_wosty.shape[2:]).permute(0, 2, 3, 1)
         
         if model_kwargs.get("sty_x", None) is not None:
             sty_rep = data.dataset.t2m_dataset.inv_transform(sty_motion.cpu().permute(0, 2, 3, 1)) # B 1 T 263
@@ -149,6 +172,9 @@ def main():
         rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
         rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
         sample = model.rot2xyz(x=sample, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
+                               jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
+                               get_rotations_back=False)
+        sample_wosty = model.rot2xyz(x=sample_wosty, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
                                jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
                                get_rotations_back=False)
         if model_kwargs.get("sty_x", None) is not None:
@@ -167,15 +193,18 @@ def main():
             all_sty_names += model_kwargs['sty_y']["style"]
 
         all_motions.append(sample.cpu().numpy())
+        all_motions_wosty.append(sample_wosty.cpu().numpy())
         all_lengths.append(model_kwargs['y']['lengths'].cpu().numpy())
 
         print(f"created {len(all_motions) * args.batch_size} samples")
 
 
     all_motions = np.concatenate(all_motions, axis=0)  # [num_repe, num_samples, njoints, 3, seqlen]
+    all_motions = all_motions[:total_num_samples]  # [bs, njoints, 6, seqlen]
     all_sty_motions = np.concatenate(all_sty_motions, axis=0)
     all_sty_motions = all_sty_motions[:total_num_samples]
-    all_motions = all_motions[:total_num_samples]  # [bs, njoints, 6, seqlen]
+    all_motions_wosty = np.concatenate(all_motions_wosty, axis=0)
+    all_motions_wosty = all_motions_wosty[:total_num_samples] 
     all_text = all_text[:total_num_samples]
     all_lengths = np.concatenate(all_lengths, axis=0)[:total_num_samples]
     all_sty_names = all_sty_names[:total_num_samples]
@@ -202,7 +231,8 @@ def main():
     num_samples_in_out_file = 7
 
     sample_print_template, row_print_template, all_print_template, \
-    sample_file_template, row_file_template, all_file_template = construct_template_variables(args.unconstrained)
+    sample_file_template, row_file_template, \
+    all_file_template, wosty_file_template, wostysample_file_template = construct_template_variables(args.unconstrained)
 
     for sample_i in range(args.num_samples):
         rep_files = []
@@ -211,17 +241,20 @@ def main():
             sty_name = all_sty_names[rep_i*args.batch_size + sample_i]
             length = all_lengths[rep_i*args.batch_size + sample_i]
             motion = all_motions[rep_i*args.batch_size + sample_i].transpose(2, 0, 1)[:length]
+            motion_wosty = all_motions_wosty[rep_i*args.batch_size + sample_i].transpose(2, 0, 1)[:length]
             if rep_i == 0:
                 sty_motion = all_sty_motions[rep_i*args.batch_size + sample_i].transpose(2, 0, 1) # T J 3
-                sty_motion = sty_motion[:sty_kwargs["y"]["length"][sample_i], ...]
+                sty_motion = sty_motion[:sty_kwargs["y"]["lengths"][sample_i], ...]
                 save_sty_file = 'style_example{:02d}.mp4'.format(sample_i)
                 print('["{}" ({:02d})| -> {}]'.format(sty_name, sample_i, save_sty_file))
                 sty_save_path = os.path.join(out_path, save_sty_file)
                 plot_3d_motion(sty_save_path, skeleton, sty_motion, dataset=args.dataset, title=sty_name, fps=fps)
             save_file = sample_file_template.format(sample_i, rep_i)
+            save_wosty_file = wostysample_file_template.format(sample_i, rep_i)
             print(sample_print_template.format(caption + "+" + sty_name, sample_i, rep_i, save_file))
             animation_save_path = os.path.join(out_path, save_file)
             plot_3d_motion(animation_save_path, skeleton, motion, dataset=args.dataset, title=caption+"+"+sty_name, fps=fps)
+            plot_3d_motion(os.path.join(out_path, save_wosty_file), skeleton, motion_wosty, dataset=args.dataset, title=caption, fps=fps)
             # Credit for visualization: https://github.com/EricGuo5513/text-to-motion
             rep_files.append(animation_save_path)
         
@@ -260,6 +293,8 @@ def save_multiple_samples(args, out_path, row_print_template, all_print_template
 def construct_template_variables(unconstrained):
     row_file_template = 'sample{:02d}.mp4'
     all_file_template = 'samples_{:02d}_to_{:02d}.mp4'
+    wosty_file_template = 'samples_wosty_{:02d}.mp4'
+    wostysample_file_template = 'sample_wosty_{:02d}_rep{:02d}.mp4'
     if unconstrained:
         sample_file_template = 'row{:02d}_col{:02d}.mp4'
         sample_print_template = '[{} row #{:02d} column #{:02d} | -> {}]'
@@ -274,7 +309,7 @@ def construct_template_variables(unconstrained):
         all_print_template = '[samples {:02d} to {:02d} | all repetitions | -> {}]'
 
     return sample_print_template, row_print_template, all_print_template, \
-           sample_file_template, row_file_template, all_file_template
+           sample_file_template, row_file_template, all_file_template, wosty_file_template, wostysample_file_template
 
 
 def load_dataset(args, max_frames, n_frames):
