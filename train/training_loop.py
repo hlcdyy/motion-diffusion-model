@@ -327,6 +327,7 @@ class TrainLoop_Style:
         )
 
         self.overwrite = args.overwrite
+        self.middle_trans = args.middle_trans
 
         self.opt = AdamW(
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
@@ -452,6 +453,7 @@ class TrainLoop_Style:
                     cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
                     cond['sty_x'] = cond['sty_x'].to(self.device)
                     cond['sty_y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['sty_y'].items()}
+                    cond['sty_y'].update({"middle_trans": self.middle_trans})
 
                     self.run_step(motion, cond)
                     if self.step % self.log_interval == 0:

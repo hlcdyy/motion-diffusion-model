@@ -104,7 +104,8 @@ class StyleTransformerEncoder(nn.TransformerEncoder):
 
     def forward(self, src: torch.Tensor, adaIN_para: Optional[torch.Tensor] = None, 
                 mask: Optional[torch.Tensor] = None, 
-                src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                src_key_padding_mask: Optional[torch.Tensor] = None,
+                middle_trans = False) -> torch.Tensor:
         r"""Pass the input through the encoder layers in turn.
 
         Args:
@@ -116,8 +117,12 @@ class StyleTransformerEncoder(nn.TransformerEncoder):
             see the docs in Transformer class.
         """
         output = src
-
-        for mod in self.layers:
+        
+        layer_len = len(self.layers)
+        for i, mod in enumerate(self.layers):
+            if middle_trans:
+                if i >= layer_len // 2:
+                    adaIN_para = None
             output = mod(output, adaIN_para, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
 
         if self.norm is not None:
@@ -161,7 +166,7 @@ class StyEncoder(nn.Module):
         x = self.maxpool(self.activation(self.conv2(x)))
    
         return x, motion_mask
-               
+
 
 # class AdaIN(nn.Module):
 #     def __init__(self, latent_dim, num_features):
@@ -393,14 +398,18 @@ class MDM(nn.Module):
             sty_feat, adaIN_mask = self.sty_enc(sty_x, sty_y)
             adaIN_para = self.adaIN(sty_feat, adaIN_mask)
         else:
-            adaIN_para = None
-        
+            adaIN_para = None 
+
 
         if self.arch == 'trans_enc':
             # adding the timestep embed
             xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
             xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
-            output = self.seqTransEncoder(xseq, adaIN_para)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+            if sty_y is not None:
+                middle_trans = sty_y.get('middle_trans', False)
+            else:
+                middle_trans = False
+            output = self.seqTransEncoder(xseq, adaIN_para, middle_trans=middle_trans)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
 
         elif self.arch == 'trans_dec':
             if self.emb_trans_dec:
@@ -420,6 +429,16 @@ class MDM(nn.Module):
         output = self.output_process(output)  # [bs, njoints, nfeats, nframes]
         return output
 
+
+    def style_forward(self, sty_x=None, sty_y=None):
+        """
+        x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
+        timesteps: [batch_size] (int)
+        """
+        sty_x = self.input_process(sty_x) # seq bs d
+        sty_feat, adaIN_mask = self.sty_enc(sty_x, sty_y)
+        adaIN_para = self.adaIN(sty_feat, adaIN_mask)
+        return adaIN_para
 
     def _apply(self, fn):
         super()._apply(fn)

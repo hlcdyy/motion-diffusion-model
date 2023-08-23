@@ -98,6 +98,7 @@ def add_model_options(parser):
     group.add_argument("--lambda_sty_trans", default=0.0, type=float, help="style transfer loss, output motion should have the same style code with style motion.")
     group.add_argument("--lambda_cont_pers", default=0.0, type=float, help="content perserving loss, t2m motion generating with its own style should output t2m ground truth motion.")
     group.add_argument("--lambda_cont_vel", default=0.0, type=float, help="the transfered motion should have the same velocity direction with content motion")
+    group.add_argument("--lambda_diff_sty", default=0.0, type=float,help="keep dispart between different motion type")
     
 
 
@@ -152,6 +153,8 @@ def add_finetune_style_options(parser):
                        help="Path to save the finetune checkpoints and results.")
     group.add_argument("--overwrite", action='store_true',
                        help="If True, will enable to use an already existing save_dir.")
+    group.add_argument("--middle_trans", action='store_true', 
+                       help="If True, will apply adaIN in the first half hidden states.")
     group.add_argument("--train_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform'], type=str,
                        help="Choose platform to log results. NoPlatform means no logging.")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")

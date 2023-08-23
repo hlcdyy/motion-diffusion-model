@@ -139,7 +139,8 @@ class GaussianDiffusion:
         lambda_sty_cons = 0.,
         lambda_sty_trans = 0.,
         lambda_cont_pers = 0.,
-        lambda_cont_vel = 0.
+        lambda_cont_vel = 0.,
+        lambda_diff_sty = 0.
         
     ):
         self.model_mean_type = model_mean_type
@@ -164,6 +165,7 @@ class GaussianDiffusion:
         self.lambda_sty_trans = lambda_sty_trans
         self.lambda_cont_pers = lambda_cont_pers
         self.lambda_cont_vel = lambda_cont_vel
+        self.lambda_diff_sty = lambda_diff_sty
 
         if self.lambda_rcxyz > 0. or self.lambda_vel > 0. or self.lambda_root_vel > 0. or \
                 self.lambda_vel_rcxyz > 0. or self.lambda_fc > 0.:
@@ -1358,6 +1360,7 @@ class GaussianDiffusion:
             # 2. style transfer loss, t2m motion should has the same motion style code
             # 3. content perserving, using self style code generate t2m ground truth motion
             # 4. perserving t2m data content, we encourage the ouput motion has the same global joint velocity direction as t2m ground truth.
+            # 5. different style should have different adain parameters
             if model_kwargs.get('sty_x', None) is not None:
                 sty_motion = model_kwargs['sty_x']
                 sty_label = model_kwargs["sty_y"]
@@ -1420,13 +1423,29 @@ class GaussianDiffusion:
                                            mask)
                 terms["cont_vel_mse"] = vel_loss + rvel_loss
 
+            if self.lambda_diff_sty > 0. and model_kwargs.get('sty_x', None) is not None:
+                mean_feat = []
+                std_feat = []
+                if len(repeated_keys) > 0:
+                    for key in repeated_keys:
+                        indices = np.where(sty_name==key)[0]
+                        mean_feat.append(torch.mean(input_sty_mean[indices], 0))
+                        std_feat.append(torch.std(input_sty_std[indices], 0))
+                    mean_feat = torch.stack(mean_feat, 0)
+                    std_feat = torch.stack(std_feat, 0)
+                    terms["sty_diff_loss"] = -torch.mean(torch.std(mean_feat, 0) + torch.std(std_feat, 0))
+                else:
+                    terms["sty_diff_loss"] = 0
+               
+
             terms["loss"] = terms["rot_mse"] + terms.get('vb', 0.) +\
                             (self.lambda_vel * terms.get('vel_mse', 0.)) +\
                             (self.lambda_rcxyz * terms.get('rcxyz_mse', 0.)) + \
                             (self.lambda_fc * terms.get('fc', 0.)) + \
                             (self.lambda_sty_cons * terms.get('sty_cons_mse', 0.)) + \
                             (self.lambda_sty_trans * terms.get('sty_trans_mse', 0.)) + \
-                            (self.lambda_cont_vel * terms.get('cont_vel_mse', 0))
+                            (self.lambda_cont_vel * terms.get('cont_vel_mse', 0)) + \
+                            (self.lambda_diff_sty * terms.get('sty_diff_loss', 0))
 
         else:
             raise NotImplementedError(self.loss_type)
