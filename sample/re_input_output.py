@@ -92,6 +92,7 @@ def main():
         sty_motion, sty_kwargs = next(sty_iterator)
         model_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in model_kwargs["y"].items()}
         model_rawkwargs = deepcopy(model_kwargs)
+        model_stykwargs = deepcopy(model_kwargs)
         model_kwargs["sty_x"] = sty_motion.to(dist_util.dev())
         sty_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in sty_kwargs["y"].items()}
         model_kwargs["sty_y"] = sty_kwargs["y"]
@@ -120,6 +121,16 @@ def main():
     if args.guidance_param != 1:
         model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
         model_rawkwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
+        model_stykwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
+        
+    norm_motion, style_motion = GetBandaiExample(sty_data, n_frames)
+    norm_motion = norm_motion.to(dist_util.dev()).float()
+    style_motion = style_motion.to(dist_util.dev()).float()
+    norm_features = model.model.getLayerLatent(norm_motion)
+    style_features = model.model.getLayerLatent(style_motion)
+    residual_features = []
+    for i, norm_feat in enumerate(norm_features):
+        residual_features.append((style_features[i] - norm_feat).detach())
     
     sample_fn = diffusion.p_sample_loop
     sample_wosty = sample_fn(
@@ -137,6 +148,26 @@ def main():
         )
     re_motion = model.model.re_encode(sample_wosty)
 
+
+    model_stykwargs['y']['layer_residual'] = residual_features
+    sample_sty = sample_fn(
+            model,
+            # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
+            (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+            clip_denoised=False,
+            model_kwargs=model_stykwargs,
+            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+            init_image=None,
+            progress=True,
+            dump_steps=None,
+            noise=None,
+            const_noise=False,
+        )
+    
+    
+    # sample_wosty = model_kwargs["sty_x"]
+    # re_motion = model.model.re_encode(sample_wosty)
+
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
     os.makedirs(out_path)
@@ -153,6 +184,11 @@ def main():
         re_motion = recover_from_ric(re_motion, n_joints)
         re_motion = re_motion.view(-1, *re_motion.shape[2:]).permute(0, 2, 3, 1)
 
+        sample_sty = data.dataset.t2m_dataset.inv_transform(sample_sty.cpu().permute(0, 2, 3, 1)).float()
+        sample_sty = recover_from_ric(sample_sty, n_joints) # B 1 T J 3 
+        sample_sty = sample_sty.view(-1, *sample_sty.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
+        
+    
     
     rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
     rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
@@ -162,18 +198,23 @@ def main():
     re_motion = model.rot2xyz(x=re_motion, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
                             jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
                             get_rotations_back=False) 
+    sample_sty = model.rot2xyz(x=sample_sty, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
+                            jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
+                            get_rotations_back=False) 
 
     caption = model_rawkwargs['y']['text']
-
+    # caption = model_kwargs["sty_y"]["text"]
+    
     sample_wosty = sample_wosty.cpu().numpy().transpose(0, 3, 1, 2)
     re_motion = re_motion.cpu().numpy().transpose(0, 3, 1, 2)
+    sample_sty = sample_sty.cpu().numpy().transpose(0, 3, 1, 2)
     sample_array = plot_3d_array([sample_wosty[0], None, paramUtil.t2m_kinematic_chain, caption[0]])
     imageio.mimsave(os.path.join(out_path, 'sample_results.gif'), np.array(sample_array), fps=20)
     re_array = plot_3d_array([re_motion[0], None, paramUtil.t2m_kinematic_chain, caption[0]+"_re"])
     imageio.mimsave(os.path.join(out_path, 'sample_results_rec.gif'), np.array(re_array), fps=20)
+    sample_styarray = plot_3d_array([sample_sty[0], None, paramUtil.t2m_kinematic_chain, caption[0]+"_stytrans"])
+    imageio.mimsave(os.path.join(out_path, 'sample_results_stytrans.gif'), np.array(sample_styarray), fps=20)
     
-    
-
 
 def load_dataset(args, max_frames, n_frames):
     data = get_dataset_loader(name=args.dataset,
@@ -188,10 +229,46 @@ def load_dataset(args, max_frames, n_frames):
                                   batch_size=args.batch_size,
                                   num_frames=max_frames, 
                                   split='test',
-                                  hml_mode="text_only")
+                                  hml_mode="text_only"
+                                    )
     
     return data, sty_data
 
+def GetBandaiExample(sty_loader, n_frames):
+    # norm_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_raise-up-both-hands_normal_024.npy")
+    norm_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_walk_normal_013.npy")
+    # style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_raise-up-both-hands_feminine_014.npy")
+    # style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_raise-up-both-hands_active_033.npy")
+    style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_walk_active_017.npy")
+
+    norm_motion = np.load(norm_npy)
+    style_motion = np.load(style_npy)
+    
+    norm_len = norm_motion.shape[0]
+    style_len = style_motion.shape[0]
+    
+    norm_motion = (norm_motion - sty_loader.dataset.style_dataset.mean) / sty_loader.dataset.style_dataset.std
+    style_motion = (style_motion - sty_loader.dataset.style_dataset.mean) / sty_loader.dataset.style_dataset.std
+
+    if norm_len < n_frames:
+        norm_motion = np.concatenate([norm_motion,
+                                    np.zeros((n_frames - norm_len, norm_motion.shape[1]))
+                                    ], axis=0)
+    else:
+        norm_motion = norm_motion[:n_frames]
+        
+    if style_len < n_frames:
+        style_motion = np.concatenate([style_motion,
+                                    np.zeros((n_frames - style_len, style_motion.shape[1]))
+                                    ], axis=0)
+    else:
+        style_motion = style_motion[:n_frames]
+    
+    norm_motion = torch.from_numpy(norm_motion).T.unsqueeze(1).unsqueeze(0)
+    style_motion = torch.from_numpy(style_motion).T.unsqueeze(1).unsqueeze(0)
+    
+    return norm_motion, style_motion
+    
 
 if __name__ == "__main__":
     main()

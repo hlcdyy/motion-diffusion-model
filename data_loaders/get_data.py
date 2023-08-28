@@ -30,7 +30,7 @@ def get_collate_fn(name, hml_mode='train'):
         return t2m_eval_collate
     if name in ["humanml", "kit"]:
         return t2m_collate
-    if name in ['style100']:
+    if name in ['style100', 'bandai-1', 'bandai-2']:
         return t2m_style_collate
     else:
         return all_collate
@@ -41,6 +41,8 @@ def get_dataset(name, num_frames, split='train', hml_mode='train'):
     if name in ["humanml", "kit", "style100"]:
         # The num_frames will be ignored when used humanML and Kit dataset
         dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode)
+    elif name in ["bandai-1", "bandai-2"]:
+        dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode, dataset_name=name)
     else:
         dataset = DATA(split=split, num_frames=num_frames)
     return dataset

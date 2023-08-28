@@ -20,7 +20,8 @@
                 "--seed",
                 "10",
                 "--style_dataset",
-                "bandai-1"
+                "bandai-2",
+        
             ]
         },
         {

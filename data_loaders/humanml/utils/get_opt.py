@@ -88,8 +88,6 @@ def get_opt(opt_path, device):
         opt.joints_num = 22
         opt.dim_pose = 263
         opt.max_motion_length = 196
-
-    
     
     else:
         raise KeyError('Dataset not recognized')

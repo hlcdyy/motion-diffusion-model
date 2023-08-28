@@ -364,7 +364,7 @@ class BandaiDataset(data.Dataset):
         
         new_name_list = []
         length_list = []
-
+    
         files = os.listdir(opt.motion_dir)
         for file in files:            
             style = file.split('_')[-2]
@@ -1052,7 +1052,10 @@ class HumanML3D_Style(data.Dataset):
         
         self.dataset_name = dataset_name
         self.dataname = dataset_name
-
+        if dataset_name == 'bandai-1':
+            datapath = './dataset/bandai1_opt.txt'
+        elif dataset_name == 'bandai-2':
+            datapath = './dataset/bandai2_opt.txt'
         # Configurations of T2M dataset and KIT dataset is almost the same
         abs_base_path = f'.'
         dataset_opt_path = pjoin(abs_base_path, datapath)
@@ -1075,7 +1078,7 @@ class HumanML3D_Style(data.Dataset):
             # used by our models
             self.mean = np.load(pjoin(opt.t2m_root, 'Mean.npy'))
             self.std = np.load(pjoin(opt.t2m_root, 'Std.npy'))
-
+        
         
         self.split = split
         if mode in ['train', 'eval', 'text_only']:

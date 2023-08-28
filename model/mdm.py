@@ -105,7 +105,7 @@ class StyleTransformerEncoder(nn.TransformerEncoder):
     def forward(self, src: torch.Tensor, adaIN_para: Optional[torch.Tensor] = None, 
                 mask: Optional[torch.Tensor] = None, 
                 src_key_padding_mask: Optional[torch.Tensor] = None,
-                middle_trans = False) -> torch.Tensor:
+                middle_trans = False, layer_residual = None) -> torch.Tensor:
         r"""Pass the input through the encoder layers in turn.
 
         Args:
@@ -124,11 +124,33 @@ class StyleTransformerEncoder(nn.TransformerEncoder):
                 if i >= layer_len // 2:
                     adaIN_para = None
             output = mod(output, adaIN_para, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
+            if layer_residual is not None:
+                output += layer_residual[i]
 
         if self.norm is not None:
             output = self.norm(output)
 
         return output
+    
+    def outEachLayer(self, src: torch.Tensor, adaIN_para: Optional[torch.Tensor] = None, 
+                mask: Optional[torch.Tensor] = None, 
+                src_key_padding_mask: Optional[torch.Tensor] = None,
+                middle_trans = False) -> torch.Tensor:
+        output = src
+        
+        layer_len = len(self.layers)
+        all_output = []
+        for i, mod in enumerate(self.layers):
+            if middle_trans:
+                if i >= layer_len // 2:
+                    adaIN_para = None
+            output = mod(output, adaIN_para, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
+            all_output.append(output) 
+
+        if self.norm is not None:
+            output = self.norm(output)
+
+        return all_output
 
 
 
@@ -370,7 +392,7 @@ class MDM(nn.Module):
             texts = clip.tokenize(raw_text, truncate=True).to(device) # [bs, context_length] # if n_tokens > 77 -> will truncate
         return self.clip_model.encode_text(texts).float()
 
-    def forward(self, x, timesteps, y=None, sty_x=None, sty_y=None):
+    def forward(self, x, timesteps, y=None, sty_x=None, sty_y=None, layer_residual=None):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
@@ -386,13 +408,6 @@ class MDM(nn.Module):
             action_emb = self.embed_action(y['action'])
             emb += self.mask_cond(action_emb, force_mask=force_mask)
 
-        if self.arch == 'gru':
-            x_reshaped = x.reshape(bs, njoints*nfeats, 1, nframes)
-            emb_gru = emb.repeat(nframes, 1, 1)     #[#frames, bs, d]
-            emb_gru = emb_gru.permute(1, 2, 0)      #[bs, d, #frames]
-            emb_gru = emb_gru.reshape(bs, self.latent_dim, 1, nframes)  #[bs, d, 1, #frames]
-            x = torch.cat((x_reshaped, emb_gru), axis=1)  #[bs, d+joints*feat, 1, #frames]
-
         x = self.input_process(x)
         if sty_x is not None:
             sty_x = self.input_process(sty_x) # seq bs d
@@ -401,7 +416,14 @@ class MDM(nn.Module):
         else:
             adaIN_para = None 
 
+        if self.arch == 'gru':
+            x_reshaped = x.reshape(bs, njoints*nfeats, 1, nframes)
+            emb_gru = emb.repeat(nframes, 1, 1)     #[#frames, bs, d]
+            emb_gru = emb_gru.permute(1, 2, 0)      #[bs, d, #frames]
+            emb_gru = emb_gru.reshape(bs, self.latent_dim, 1, nframes)  #[bs, d, 1, #frames]
+            x = torch.cat((x_reshaped, emb_gru), axis=1)  #[bs, d+joints*feat, 1, #frames]
 
+       
         if self.arch == 'trans_enc':
             # adding the timestep embed
             xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
@@ -410,7 +432,7 @@ class MDM(nn.Module):
                 middle_trans = sty_y.get('middle_trans', False)
             else:
                 middle_trans = False
-            output = self.seqTransEncoder(xseq, adaIN_para, middle_trans=middle_trans)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+            output = self.seqTransEncoder(xseq, adaIN_para, middle_trans=middle_trans, layer_residual=layer_residual)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
 
         elif self.arch == 'trans_dec':
             if self.emb_trans_dec:
@@ -451,7 +473,19 @@ class MDM(nn.Module):
             output = self.seqTransEncoder(re_input)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
         output = self.output_process(output)
         return output
+    
+    def getLayerLatent(self, x):
 
+        x = self.input_process(x)  
+        zero_times = torch.zeros(x.shape[1]).to(x.device).long()
+        emb = self.embed_timestep(zero_times)  # [1, bs, d]
+
+        if self.arch == 'trans_enc':
+            xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
+            xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
+            output_features = self.seqTransEncoder.outEachLayer(xseq, None, middle_trans=False)
+        
+        return output_features
 
     def _apply(self, fn):
         super()._apply(fn)

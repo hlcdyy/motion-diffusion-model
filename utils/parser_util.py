@@ -214,8 +214,9 @@ def add_stytransfer_options(parser):
                        help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--guidance_param", default=2.5, type=float,
                        help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
-    group.add_argument("--style_dataset", default='style100', choices=['style100'], type=str,
+    group.add_argument("--style_dataset", default='style100', choices=['style100', 'bandai-1', 'bandai-2'], type=str,
                        help="Dataset name (choose from list).")
+
     
     
 
