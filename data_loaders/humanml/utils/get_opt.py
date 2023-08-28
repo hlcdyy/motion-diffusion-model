@@ -77,6 +77,19 @@ def get_opt(opt_path, device):
         opt.joints_num = 22
         opt.dim_pose = 263
         opt.max_motion_length = 196
+
+    elif opt.dataset_name in ['bandai-1', 'bandai-2']:
+        if opt.dataset_name == 'bandai-1':
+            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-1/'
+        else:
+            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2/'
+        opt.t2m_root = '/data/hulei/OpenProjects/HumanML3D/HumanML3D'
+        opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
+        opt.joints_num = 22
+        opt.dim_pose = 263
+        opt.max_motion_length = 196
+
+    
     
     else:
         raise KeyError('Dataset not recognized')

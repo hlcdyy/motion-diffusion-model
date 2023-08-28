@@ -277,6 +277,7 @@ class MDM(nn.Module):
         self.input_process = InputProcess(self.data_rep, self.input_feats+self.gru_emb_dim, self.latent_dim)
 
         self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
+        self.sequence_pos_encoder_shift = PositionalEncoding_shift(self.latent_dim, self.dropout)
         self.emb_trans_dec = emb_trans_dec
         
         self.sty_enc = StyEncoder(self.data_rep, self.njoints, self.nfeats, self.latent_dim)
@@ -439,6 +440,18 @@ class MDM(nn.Module):
         sty_feat, adaIN_mask = self.sty_enc(sty_x, sty_y)
         adaIN_para = self.adaIN(sty_feat, adaIN_mask)
         return adaIN_para
+    
+    def re_encode(self, output):
+        re_input = self.input_process(output)
+        zero_times = torch.zeros(re_input.shape[1]).to(re_input.device).long()
+        emb = self.embed_timestep(zero_times)  # [1, bs, d]
+        if self.arch == 'trans_enc':
+            re_input = torch.cat((emb, re_input), axis=0)  # [seqlen+1, bs, d]
+            re_input = self.sequence_pos_encoder(re_input)  # [seqlen+1, bs, d]
+            output = self.seqTransEncoder(re_input)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+        output = self.output_process(output)
+        return output
+
 
     def _apply(self, fn):
         super()._apply(fn)
@@ -467,6 +480,27 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         # not used in the final model
         x = x + self.pe[:x.shape[0], :]
+        return self.dropout(x)
+    
+
+class PositionalEncoding_shift(nn.Module):
+    # shift one position when positional encoding for omit the text and time influence.
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding_shift, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # not used in the final model
+        x = x + self.pe[1:x.shape[0]+1, :]
         return self.dropout(x)
 
 

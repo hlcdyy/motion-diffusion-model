@@ -14,10 +14,12 @@ from model.cfg_sampler import ClassifierFreeSampleModel
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.humanml.scripts.motion_process import recover_from_ric
 import data_loaders.humanml.utils.paramUtil as paramUtil
-from data_loaders.humanml.utils.plot_script import plot_3d_motion
+from data_loaders.humanml.utils.plot_script import plot_3d_motion, plot_3d_array
+import imageio
 import shutil
 from data_loaders.tensors import collate
 from copy import deepcopy
+
 
 
 def main():
@@ -119,23 +121,58 @@ def main():
         model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
         model_rawkwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
     
-    adain_para = model.model.style_forward(model_kwargs["sty_x"], model_kwargs["sty_y"])
-    sty_set = set(model_kwargs["sty_y"]["style"])
-    gamma, beta = adain_para
+    sample_fn = diffusion.p_sample_loop
+    sample_wosty = sample_fn(
+            model,
+            # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
+            (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+            clip_denoised=False,
+            model_kwargs=model_rawkwargs,
+            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+            init_image=None,
+            progress=True,
+            dump_steps=None,
+            noise=None,
+            const_noise=False,
+        )
+    re_motion = model.model.re_encode(sample_wosty)
 
-    for sty in sty_set:
-        index = []
-        for i, raw_sty in enumerate(model_kwargs["sty_y"]["style"]):
-            if raw_sty == sty:
-                index.append(i)
-        print(torch.mean(torch.mean(gamma[index, ...], 0)))
-        # print(torch.mean(beta[index, ...], 0))   
-        # 
+    if os.path.exists(out_path):
+        shutil.rmtree(out_path)
+    os.makedirs(out_path)
     
-      
+    if model.data_rep == 'hml_vec':
+        n_joints = 22 if re_motion.shape[1] == 263 else 21
+            
+        sample_wosty = data.dataset.t2m_dataset.inv_transform(sample_wosty.cpu().permute(0, 2, 3, 1)).float()
+        sample_wosty = recover_from_ric(sample_wosty, n_joints) # B 1 T J 3 
+        sample_wosty = sample_wosty.view(-1, *sample_wosty.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
+
+        re_motion = data.dataset.t2m_dataset.inv_transform(re_motion.cpu().detach().numpy().transpose(0, 2, 3, 1))
+        re_motion = torch.from_numpy(re_motion).to(args.device)
+        re_motion = recover_from_ric(re_motion, n_joints)
+        re_motion = re_motion.view(-1, *re_motion.shape[2:]).permute(0, 2, 3, 1)
+
     
+    rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
+    rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
+    sample_wosty = model.rot2xyz(x=sample_wosty, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
+                            jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
+                            get_rotations_back=False) 
+    re_motion = model.rot2xyz(x=re_motion, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
+                            jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
+                            get_rotations_back=False) 
 
+    caption = model_rawkwargs['y']['text']
 
+    sample_wosty = sample_wosty.cpu().numpy().transpose(0, 3, 1, 2)
+    re_motion = re_motion.cpu().numpy().transpose(0, 3, 1, 2)
+    sample_array = plot_3d_array([sample_wosty[0], None, paramUtil.t2m_kinematic_chain, caption[0]])
+    imageio.mimsave(os.path.join(out_path, 'sample_results.gif'), np.array(sample_array), fps=20)
+    re_array = plot_3d_array([re_motion[0], None, paramUtil.t2m_kinematic_chain, caption[0]+"_re"])
+    imageio.mimsave(os.path.join(out_path, 'sample_results_rec.gif'), np.array(re_array), fps=20)
+    
+    
 
 
 def load_dataset(args, max_frames, n_frames):

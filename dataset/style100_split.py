@@ -13,4 +13,3 @@ train_list = ["Aeroplane", "Akimbo", "Angry", "ArmsAboveHead", "ArmsBehindBack",
                 "WildLegs", "Zombie"]
 
 test_list = ['Star', 'Skip', 'Roadrunner', 'ShieldedLeft', 'WildArms']
-

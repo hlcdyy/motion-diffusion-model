@@ -1398,7 +1398,7 @@ class GaussianDiffusion:
                 transfered_sty_para = enc.adaIN(sty_feat, adaIN_mask) 
                 terms["sty_trans_mse"] = mse(input_sty_para[0], transfered_sty_para[0]) + mse(input_sty_para[1], input_sty_para[1])
 
-
+            
             if self.lambda_cont_pers > 0. and model_kwargs.get('sty_x', None) is not None:
                 # the new_model_output should be consistent with x_start
                 new_model_kwarags = deepcopy(model_kwargs)

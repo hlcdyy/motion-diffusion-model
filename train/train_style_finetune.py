@@ -4,6 +4,8 @@ Train a diffusion model on images.
 """
 
 import os
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 import json
 from utils.fixseed import fixseed
 from utils.parser_util import finetune_style_args

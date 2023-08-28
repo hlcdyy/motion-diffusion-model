@@ -105,7 +105,8 @@ def add_model_options(parser):
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
-    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 'uestc', 'style100'], type=str,
+    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 
+                                                                'uestc', 'style100'], type=str,
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
@@ -147,7 +148,7 @@ def add_training_options(parser):
 
 def add_finetune_style_options(parser):
     group = parser.add_argument_group('style finetune')
-    group.add_argument("--style_dataset", default='style100', choices=['style100'], type=str,
+    group.add_argument("--style_dataset", default='style100', choices=['style100', 'bandai-1', 'bandai-2'], type=str,
                        help="Dataset name (choose from list).")
     group.add_argument("--save_dir", required=True, type=str,
                        help="Path to save the finetune checkpoints and results.")

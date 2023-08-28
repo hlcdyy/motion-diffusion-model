@@ -11,7 +11,8 @@ def load_model_wo_clip(model, state_dict):
     # assert all([k.startswith('clip_model.') for k in missing_keys])
     assert all([k.startswith('clip_model.') or 
                 k.startswith('sty_enc.') or 
-                k.startswith('adaIN.') for k in missing_keys])
+                k.startswith('adaIN.') or 
+                k.startswith('sequence_pos_encoder_shift.') for k in missing_keys])
 
 # def load_finetune_model(model, state_dict):
 #     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
@@ -96,6 +97,7 @@ def create_gaussian_diffusion(args):
         lambda_sty_cons = args.lambda_sty_cons, 
         lambda_sty_trans = args.lambda_sty_trans,
         lambda_cont_pers = args.lambda_cont_pers,
-        lambda_cont_vel = args.lambda_cont_vel
+        lambda_cont_vel = args.lambda_cont_vel, 
+        lambda_diff_sty = args.lambda_diff_sty,
         
     )
