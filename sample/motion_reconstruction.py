@@ -7,8 +7,8 @@ from utils.fixseed import fixseed
 import os
 import numpy as np
 import torch
-from utils.parser_util import style_transfer_args
-from utils.model_util import create_model_and_diffusion, load_model_wo_clip
+from utils.parser_util import reconstruct_args 
+from utils.model_util import creat_mdm_diffusion_motionenc, load_model_wo_clip
 from utils import dist_util
 from model.cfg_sampler import ClassifierFreeSampleModel
 from data_loaders.get_data import get_dataset_loader
@@ -21,45 +21,24 @@ from data_loaders.tensors import collate
 from copy import deepcopy
 
 
-
 def main():
-    args = style_transfer_args()
+    args = reconstruct_args()
     fixseed(args.seed)
     out_path = args.output_dir
-    name = os.path.basename(os.path.dirname(args.model_path))
-    niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
+    name = os.path.basename(os.path.dirname(args.motionenc_path))
+    niter = os.path.basename(args.motionenc_path).replace('model', '').replace('.pt', '')
     max_frames = 196 if args.dataset in ['kit', 'humanml'] else 60
     fps = 12.5 if args.dataset == 'kit' else 20
     n_frames = min(max_frames, int(args.motion_length*fps))
     is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name])
     dist_util.setup_dist(args.device)
     if out_path == '':
-        out_path = os.path.join(os.path.dirname(args.model_path),
-                                'styletransfer_{}_{}_seed{}'.format(name, niter, args.seed))
+        out_path = os.path.join(os.path.dirname(args.motionenc_path),
+                                'reconstruction_{}_{}_seed{}'.format(name, niter, args.seed))
         if args.text_prompt != '':
             out_path += '_' + args.text_prompt.replace(' ', '_').replace('.', '')
         elif args.input_text != '':
             out_path += '_' + os.path.basename(args.input_text).replace('.txt', '').replace(' ', '_').replace('.', '')
-
-    # this block must be called BEFORE the dataset is loaded
-    if args.text_prompt != '':
-        texts = [args.text_prompt]
-        args.num_samples = 1
-    elif args.input_text != '':
-        assert os.path.exists(args.input_text)
-        with open(args.input_text, 'r') as fr:
-            texts = fr.readlines()
-        texts = [s.replace('\n', '') for s in texts]
-        args.num_samples = len(texts)
-    elif args.action_name:
-        action_text = [args.action_name]
-        args.num_samples = 1
-    elif args.action_file != '':
-        assert os.path.exists(args.action_file)
-        with open(args.action_file, 'r') as fr:
-            action_text = fr.readlines()
-        action_text = [s.replace('\n', '') for s in action_text]
-        args.num_samples = len(action_text)
 
     assert args.num_samples <= args.batch_size, \
         f'Please either increase batch_size({args.batch_size}) or reduce num_samples({args.num_samples})'
@@ -74,29 +53,34 @@ def main():
     total_num_samples = args.num_samples * args.num_repetitions
 
     print("Creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(args, data)
+    mdm_model, diffusion, motion_enc = creat_mdm_diffusion_motionenc(args, data)
 
-    print(f"Loading checkpoints from [{args.model_path}]...")
-    state_dict = torch.load(args.model_path, map_location='cpu')
-    load_model_wo_clip(model, state_dict)
+    print(f"Loading checkpoints from [{args.mdm_path}]...")
+    print(f"Loading checkpoints from [{args.motionenc_path}]...")
+    
+    mdm_state_dict = torch.load(args.mdm_path, map_location='cpu')
+    motion_enc_dict = torch.load(args.motionenc_path, map_location='cpu')
+    load_model_wo_clip(mdm_model, mdm_state_dict)
+    load_model_wo_clip(motion_enc, motion_enc_dict)
 
     if args.guidance_param != 1:
-        model = ClassifierFreeSampleModel(model)   # wrapping model with the classifier-free sampler
-    model.to(dist_util.dev())
-    model.eval()  # disable random masking
+        mdm_model = ClassifierFreeSampleModel(mdm_model)   # wrapping model with the classifier-free sampler
+    mdm_model.to(dist_util.dev())
+    motion_enc.to(dist_util.dev())
+    motion_enc.eval()
+    mdm_model.eval()  # disable random masking
 
     if is_using_data:
         iterator = iter(data)
-        sty_iterator = iter(sty_data)
-        _, model_kwargs = next(iterator)
-        sty_motion, sty_kwargs = next(sty_iterator)
+        t2m_motion, model_kwargs = next(iterator)
+        t2m_motion = t2m_motion.to(dist_util.dev())
         model_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in model_kwargs["y"].items()}
-        model_rawkwargs = deepcopy(model_kwargs)
+        norm_motion, style_motion = GetBandaiExample(sty_data, n_frames)
+        norm_motion = norm_motion.float().to(dist_util.dev())
+        style_motion = style_motion.float().to(dist_util.dev())
+        model_contkwargs = deepcopy(model_kwargs)
         model_stykwargs = deepcopy(model_kwargs)
-        model_kwargs["sty_x"] = sty_motion.to(dist_util.dev())
-        sty_kwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in sty_kwargs["y"].items()}
-        model_kwargs["sty_y"] = sty_kwargs["y"]
-        
+
     else:
         collate_args = [{'inp': torch.zeros(n_frames), 'tokens': None, 'lengths': n_frames}] * args.num_samples
         is_t2m = any([args.input_text, args.text_prompt])
@@ -113,32 +97,29 @@ def main():
     all_motions = []
     all_lengths = []
     all_text = []
-    all_sty_motions = []
-    all_sty_names = []
-    all_motions_wosty =[]
 
     # add CFG scale to batch    
     if args.guidance_param != 1:
-        model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
-        model_rawkwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
+        model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param   
+        model_contkwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
         model_stykwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
-    
-    norm_motion, style_motion = GetBandaiExample(sty_data, n_frames)
-    norm_motion = norm_motion.to(dist_util.dev()).float()
-    style_motion = style_motion.to(dist_util.dev()).float()
-    norm_features = model.model.getLayerLatent(norm_motion)
-    style_features = model.model.getLayerLatent(style_motion)
-    residual_features = []
-    for i, norm_feat in enumerate(norm_features):
-        residual_features.append((style_features[i] - norm_feat).detach())
+        
+    mu, _ = motion_enc(t2m_motion)
+    norm_motion = mdm_model.model.re_encode(norm_motion)
+    style_motion = mdm_model.model.re_encode(style_motion)
+    content_mu, _ = motion_enc(norm_motion)
+    style_mu, _ = motion_enc(style_motion)
+    model_kwargs["mu"] = mu
+    model_contkwargs["mu"] = content_mu
+    model_stykwargs["mu"] = style_mu
     
     sample_fn = diffusion.p_sample_loop
-    sample_wosty = sample_fn(
-            model,
+    sample_rec = sample_fn(
+            mdm_model,
             # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
-            (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+            (args.batch_size, mdm_model.njoints, mdm_model.nfeats, max_frames),  # BUG FIX
             clip_denoised=False,
-            model_kwargs=model_rawkwargs,
+            model_kwargs=model_kwargs,
             skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
             init_image=None,
             progress=True,
@@ -146,14 +127,25 @@ def main():
             noise=None,
             const_noise=False,
         )
-    re_motion = model.model.re_encode(sample_wosty)
-
-
-    model_stykwargs['layer_residual'] = residual_features
-    sample_sty = sample_fn(
-            model,
+    
+    sample_cont = sample_fn(
+            mdm_model,
             # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
-            (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+            (args.batch_size, mdm_model.njoints, mdm_model.nfeats, max_frames),  # BUG FIX
+            clip_denoised=False,
+            model_kwargs=model_contkwargs,
+            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+            init_image=None,
+            progress=True,
+            dump_steps=None,
+            noise=None,
+            const_noise=False,
+        )
+
+    sample_sty = sample_fn(
+            mdm_model,
+            # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
+            (args.batch_size, mdm_model.njoints, mdm_model.nfeats, max_frames),  # BUG FIX
             clip_denoised=False,
             model_kwargs=model_stykwargs,
             skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
@@ -163,8 +155,6 @@ def main():
             noise=None,
             const_noise=False,
         )
-    
-    
     # sample_wosty = model_kwargs["sty_x"]
     # re_motion = model.model.re_encode(sample_wosty)
 
@@ -172,83 +162,69 @@ def main():
         shutil.rmtree(out_path)
     os.makedirs(out_path)
     
-    if model.data_rep == 'hml_vec':
-        n_joints = 22 if re_motion.shape[1] == 263 else 21
+    if mdm_model.data_rep == 'hml_vec':
+        n_joints = 22 if sample_rec.shape[1] == 263 else 21
             
-        sample_wosty = data.dataset.t2m_dataset.inv_transform(sample_wosty.cpu().permute(0, 2, 3, 1)).float()
-        sample_wosty = recover_from_ric(sample_wosty, n_joints) # B 1 T J 3 
-        sample_wosty = sample_wosty.view(-1, *sample_wosty.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
+        sample_rec = data.dataset.t2m_dataset.inv_transform(sample_rec.cpu().permute(0, 2, 3, 1)).float()
+        sample_rec = recover_from_ric(sample_rec, n_joints) # B 1 T J 3 
+        sample_rec = sample_rec.view(-1, *sample_rec.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
 
-        re_motion = data.dataset.t2m_dataset.inv_transform(re_motion.cpu().detach().numpy().transpose(0, 2, 3, 1))
-        re_motion = torch.from_numpy(re_motion).to(args.device)
-        re_motion = recover_from_ric(re_motion, n_joints)
-        re_motion = re_motion.view(-1, *re_motion.shape[2:]).permute(0, 2, 3, 1)
+        sample_gt = data.dataset.t2m_dataset.inv_transform(t2m_motion.cpu().permute(0, 2, 3, 1)).float()
+        sample_gt = recover_from_ric(sample_gt, n_joints) # B 1 T J 3 
+        sample_gt = sample_gt.view(-1, *sample_gt.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
+
+        sample_cont = data.dataset.t2m_dataset.inv_transform(sample_cont.cpu().permute(0, 2, 3, 1)).float()
+        sample_cont = recover_from_ric(sample_cont, n_joints) # B 1 T J 3 
+        sample_cont = sample_cont.view(-1, *sample_cont.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
 
         sample_sty = data.dataset.t2m_dataset.inv_transform(sample_sty.cpu().permute(0, 2, 3, 1)).float()
         sample_sty = recover_from_ric(sample_sty, n_joints) # B 1 T J 3 
         sample_sty = sample_sty.view(-1, *sample_sty.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
-        
-        norm_motion = data.dataset.t2m_dataset.inv_transform(norm_motion.cpu().detach().numpy().transpose(0, 2, 3, 1))
-        norm_motion = torch.from_numpy(norm_motion).to(args.device)
-        norm_motion = recover_from_ric(norm_motion, n_joints)
-        norm_motion = norm_motion.view(-1, *norm_motion.shape[2:]).permute(0, 2, 3, 1)
-
-        style_motion = data.dataset.t2m_dataset.inv_transform(style_motion.cpu().detach().numpy().transpose(0, 2, 3, 1))
-        style_motion = torch.from_numpy(style_motion).to(args.device)
-        style_motion = recover_from_ric(style_motion, n_joints)
-        style_motion = style_motion.view(-1, *style_motion.shape[2:]).permute(0, 2, 3, 1)
-
-
-    rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
+    
+    rot2xyz_pose_rep = 'xyz' if mdm_model.data_rep in ['xyz', 'hml_vec'] else mdm_model.data_rep
     rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
-    sample_wosty = model.rot2xyz(x=sample_wosty, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
+    sample_rec = mdm_model.rot2xyz(x=sample_rec, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
                             jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
                             get_rotations_back=False) 
-    re_motion = model.rot2xyz(x=re_motion, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
+    sample_gt = mdm_model.rot2xyz(x=sample_gt, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
                             jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
                             get_rotations_back=False) 
-    sample_sty = model.rot2xyz(x=sample_sty, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
-                            jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
-                            get_rotations_back=False) 
+   
 
-    caption = model_rawkwargs['y']['text']
+    caption = model_kwargs['y']['text']
     # caption = model_kwargs["sty_y"]["text"]
     
-    sample_wosty = sample_wosty.cpu().numpy().transpose(0, 3, 1, 2)
-    re_motion = re_motion.cpu().numpy().transpose(0, 3, 1, 2)
+    sample_rec = sample_rec.cpu().numpy().transpose(0, 3, 1, 2)
+    sample_gt = sample_gt.cpu().numpy().transpose(0, 3, 1, 2)
+    sample_cont = sample_cont.cpu().numpy().transpose(0, 3, 1, 2)
     sample_sty = sample_sty.cpu().numpy().transpose(0, 3, 1, 2)
-    norm_motion = norm_motion.cpu().numpy().transpose(0, 3, 1, 2)
-    style_motion = style_motion.cpu().numpy().transpose(0, 3, 1, 2)
-    sample_array = plot_3d_array([sample_wosty[0], None, paramUtil.t2m_kinematic_chain, caption[0]])
-    imageio.mimsave(os.path.join(out_path, 'sample_results.gif'), np.array(sample_array), duration=196/20)
-    re_array = plot_3d_array([re_motion[0], None, paramUtil.t2m_kinematic_chain, caption[0]+"_re"])
-    imageio.mimsave(os.path.join(out_path, 'sample_results_rec.gif'), np.array(re_array), duration=196/20)
-    sample_styarray = plot_3d_array([sample_sty[0][:n_frames], None, paramUtil.t2m_kinematic_chain, caption[0]+"_stytrans"])
-    imageio.mimsave(os.path.join(out_path, 'sample_results_stytrans.gif'), np.array(sample_styarray), duration=120/20)
-    
-    normal_array = plot_3d_array([norm_motion[0], None, paramUtil.t2m_kinematic_chain, "normal_motion"])
-    imageio.mimsave(os.path.join(out_path, 'normal_motion.gif'), np.array(normal_array), duration=120/20)
 
-    style_array = plot_3d_array([style_motion[0], None, paramUtil.t2m_kinematic_chain, "stylized_motion"])
-    imageio.mimsave(os.path.join(out_path, 'stylized_motion.gif'), np.array(style_array), duration=120/20)
-
+    sample_array = plot_3d_array([sample_rec[0], None, paramUtil.t2m_kinematic_chain, caption[0] + "_reconstruction"])
+    imageio.mimsave(os.path.join(out_path, 'reconstruct_results.gif'), np.array(sample_array), duration=6)
+    gt_array = plot_3d_array([sample_gt[0][:model_kwargs["y"]["lengths"][0]], None, paramUtil.t2m_kinematic_chain, caption[0]])
+    imageio.mimsave(os.path.join(out_path, 'gt_results.gif'), np.array(gt_array), duration=int(model_kwargs["y"]["lengths"][0]/20))
+    # sample_styarray = plot_3d_array([sample_sty[0], None, paramUtil.t2m_kinematic_chain, caption[0]+"_stytrans"])
+    # imageio.mimsave(os.path.join(out_path, 'sample_results_stytrans.gif'), np.array(sample_styarray), fps=20)
+    cont_array = plot_3d_array([sample_cont[0][:n_frames], None, paramUtil.t2m_kinematic_chain, "content_motion_rec"])
+    imageio.mimsave(os.path.join(out_path, 'reconstruct_content.gif'), np.array(cont_array), duration=6)
+    sty_array = plot_3d_array([sample_sty[0][:n_frames], None, paramUtil.t2m_kinematic_chain, "stylized_motion_rec"])
+    imageio.mimsave(os.path.join(out_path, 'reconstruct_style.gif'), np.array(sty_array), duration=6)
 
 def load_dataset(args, max_frames, n_frames):
     data = get_dataset_loader(name=args.dataset,
                               batch_size=args.batch_size,
                               num_frames=max_frames,
                               split='test',
-                              hml_mode='text_only')
+                              hml_mode='eval')
     if args.dataset in ['kit', 'humanml']:
         data.dataset.t2m_dataset.fixed_length = n_frames
-    
+
     sty_data = get_dataset_loader(name=args.style_dataset,
                                   batch_size=args.batch_size,
                                   num_frames=max_frames, 
                                   split='test',
                                   hml_mode="text_only"
                                     )
-    
     return data, sty_data
 
 def GetBandaiExample(sty_loader, n_frames):

@@ -21,12 +21,12 @@ class ClassifierFreeSampleModel(nn.Module):
         self.data_rep = self.model.data_rep
         self.cond_mode = self.model.cond_mode
 
-    def forward(self, x, timesteps, y=None, sty_x=None, sty_y=None):
+    def forward(self, x, timesteps, y=None, sty_x=None, sty_y=None, layer_residual=None, mu=None):
         cond_mode = self.model.cond_mode
         assert cond_mode in ['text', 'action']
         y_uncond = deepcopy(y)
         y_uncond['uncond'] = True
-        out = self.model(x, timesteps, y, sty_x, sty_y)
-        out_uncond = self.model(x, timesteps, y_uncond, sty_x, sty_y)
+        out = self.model(x, timesteps, y, sty_x, sty_y, layer_residual, mu)
+        out_uncond = self.model(x, timesteps, y_uncond, sty_x, sty_y, layer_residual, mu)
         return out_uncond + (y['scale'].view(-1, 1, 1, 1) * (out - out_uncond))
 

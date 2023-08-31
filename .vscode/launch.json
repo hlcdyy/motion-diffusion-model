@@ -5,6 +5,25 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: train_motion_encoder",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_motion_encoder",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args":[
+                "--save_dir",
+                "save/my_motion_enc_512",
+                "--dataset",
+                "humanml",
+                "--overwrite",
+                "--train_platform_type",
+                "TensorboardPlatform",
+        
+            ]
+        },
+        {
             "name": "Python: rec_input_output",
             "type": "python",
             "request": "launch",
@@ -18,10 +37,9 @@
                 "--num_samples",
                 "5",
                 "--seed",
-                "10",
+                "15",
                 "--style_dataset",
                 "bandai-2",
-        
             ]
         },
         {

@@ -7,6 +7,7 @@ import clip
 from model.rotation2xyz import Rotation2xyz
 from typing import Optional
 
+
 class StyleTransformerLayer(nn.TransformerEncoderLayer):
     r"""TransformerEncoderLayer is made up of self-attn and feedforward network.
     This standard encoder layer is based on the paper "Attention Is All You Need".
@@ -125,7 +126,11 @@ class StyleTransformerEncoder(nn.TransformerEncoder):
                     adaIN_para = None
             output = mod(output, adaIN_para, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
             if layer_residual is not None:
-                output += layer_residual[i]
+                if output.shape[0] < layer_residual[i].shape[0]:
+                    output += layer_residual[i][:output.shape[0]]
+                else:
+                    output[:layer_residual[i].shape[0]] += layer_residual[i]
+                    
 
         if self.norm is not None:
             output = self.norm(output)
@@ -255,6 +260,148 @@ class AdaIN(nn.Module):
         return (gamma, beta)
         
 
+class MotionEncoder(nn.Module):
+    def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
+                 ablation=None, activation="gelu", legacy=False, data_rep='rot6d', dataset='amass', clip_dim=512,
+                 arch='trans_enc', emb_trans_dec=False, clip_version=None, **kargs):
+    
+        super().__init__()
+        
+        self.modeltype = modeltype
+        self.njoints = njoints
+        self.nfeats = nfeats
+        self.num_actions = num_actions
+        
+        self.pose_rep = pose_rep
+        self.glob = glob
+        self.glob_rot = glob_rot
+        self.translation = translation
+        
+        self.latent_dim = latent_dim
+        
+        self.ff_size = ff_size
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.dropout = dropout
+
+        self.ablation = ablation
+        self.activation = activation
+        
+        self.input_feats = self.njoints*self.nfeats
+
+        self.muQuery = nn.Parameter(torch.randn(1, self.latent_dim))
+        self.sigmaQuery = nn.Parameter(torch.randn(1, self.latent_dim))
+        
+        self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
+
+        seqTransEncoderLayer = nn.TransformerEncoderLayer(d_model=self.latent_dim,
+                                                          nhead=self.num_heads,
+                                                          dim_feedforward=self.ff_size,
+                                                          dropout=self.dropout,
+                                                          activation=self.activation)
+        self.seqTransEncoder = nn.TransformerEncoder(seqTransEncoderLayer,
+                                                     num_layers=self.num_layers)
+        
+        self.clip_model = self.load_and_freeze_clip(clip_version)
+        self.input_process = self.load_and_freeze_inputprocess(modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim, ff_size, num_layers, num_heads, dropout,
+                 ablation, activation, legacy, data_rep, dataset, clip_dim,
+                 arch, emb_trans_dec, clip_version, **kargs)
+    
+
+    def parameters_wo_clip(self):
+        return [p for name, p in self.named_parameters() if not name.startswith('clip_model.') and not name.startswith('input_process.')]
+
+    def load_and_freeze_clip(self, clip_version):
+        clip_model, clip_preprocess = clip.load(clip_version, device='cpu',
+                                                jit=False)  # Must set jit=False for training
+        clip.model.convert_weights(
+            clip_model)  # Actually this line is unnecessary since clip by default already on float16
+
+        # Freeze CLIP weights
+        clip_model.eval()
+        for p in clip_model.parameters():
+            p.requires_grad = False
+
+        return clip_model
+    
+    def load_model_wo_clip(self, model, state_dict):
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        # print([k for k in missing_keys if not k.startswith('clip_model.')])
+        assert len(unexpected_keys) == 0
+        # assert all([k.startswith('clip_model.') for k in missing_keys])
+        assert all([k.startswith('clip_model.') or 
+                    k.startswith('sty_enc.') or 
+                    k.startswith('adaIN.') or 
+                    k.startswith('sequence_pos_encoder_shift.') for k in missing_keys])
+    
+    def load_and_freeze_inputprocess(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim, ff_size, num_layers, num_heads, dropout,
+                 ablation, activation, legacy, data_rep, dataset, clip_dim,
+                 arch, emb_trans_dec, clip_version, **kargs):
+        mdm_model = MDM(modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim, ff_size, num_layers, num_heads, dropout,
+                 ablation, activation, legacy, data_rep, dataset, clip_dim,
+                 arch, emb_trans_dec, clip_version, **kargs)
+        # missing_keys, unexpected_keys = mdm_model.load_state_dict(torch.load(kargs["mdm_path"]), strict=False)
+        self.load_model_wo_clip(mdm_model, torch.load(kargs["mdm_path"]))
+        mdm_model.eval()
+        input_process = mdm_model.input_process
+        for p in input_process.parameters():
+            p.requires_grad = False
+
+        return input_process
+    
+    def encode_text(self, raw_text):
+        # raw_text - list (batch_size length) of strings with input text prompts
+        device = next(self.parameters()).device
+        max_text_len = 20  # Specific hardcoding for humanml dataset
+        if max_text_len is not None:
+            default_context_length = 77
+            context_length = max_text_len + 2 # start_token + 20 + end_token
+            assert context_length < default_context_length
+            texts = clip.tokenize(raw_text, context_length=context_length, truncate=True).to(device) # [bs, context_length] # if n_tokens > context_length -> will truncate
+            # print('texts', texts.shape)
+            zero_pad = torch.zeros([texts.shape[0], default_context_length-context_length], dtype=texts.dtype, device=texts.device)
+            texts = torch.cat([texts, zero_pad], dim=1)
+            # print('texts after pad', texts.shape, texts)
+        else:
+            texts = clip.tokenize(raw_text, truncate=True).to(device) # [bs, context_length] # if n_tokens > 77 -> will truncate
+        return self.clip_model.encode_text(texts).float()
+    
+
+    def forward(self, x, y=None):
+        """
+        x: [batch_size, njoints, nfeats, max_frames], motion shape
+        """
+        bs, njoints, nfeats, nframes = x.shape
+        x = self.input_process(x) #[seqlen, bs, d]
+        
+        if y is not None:
+            mask = y.get("mask").squeeze(1).squeeze(1).bool()
+            raw_text = y['text']
+            enc_text = self.encode_text(raw_text)        
+        else:
+            mask = torch.ones((bs, nframes), dtype=bool, device=x.device)
+            enc_text = None
+    
+        xseq = torch.cat((self.muQuery[:1][None].repeat(1, bs, 1), self.sigmaQuery[:1][None].repeat(1, bs, 1), x), axis=0)
+
+        # add positional encoding
+        xseq = self.sequence_pos_encoder(xseq)
+
+        # create a bigger mask, to allow attend to mu and sigma
+        muandsigmaMask = torch.ones((bs, 2), dtype=bool, device=x.device)
+
+        maskseq = torch.cat((muandsigmaMask, mask), axis=1)
+
+        final = self.seqTransEncoder(xseq, src_key_padding_mask=~maskseq)
+        mu = final[0]
+        logvar = final[1]
+
+        return mu, enc_text
+    
 
 class MDM(nn.Module):
     def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
@@ -392,7 +539,8 @@ class MDM(nn.Module):
             texts = clip.tokenize(raw_text, truncate=True).to(device) # [bs, context_length] # if n_tokens > 77 -> will truncate
         return self.clip_model.encode_text(texts).float()
 
-    def forward(self, x, timesteps, y=None, sty_x=None, sty_y=None, layer_residual=None):
+    def forward(self, x, timesteps, y=None, 
+                sty_x=None, sty_y=None, layer_residual=None, mu=None):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
@@ -403,6 +551,8 @@ class MDM(nn.Module):
         force_mask = y.get('uncond', False)
         if 'text' in self.cond_mode:
             enc_text = self.encode_text(y['text'])
+            if mu is not None:
+                enc_text = mu
             emb += self.embed_text(self.mask_cond(enc_text, force_mask=force_mask))
         if 'action' in self.cond_mode:
             action_emb = self.embed_action(y['action'])
@@ -432,7 +582,10 @@ class MDM(nn.Module):
                 middle_trans = sty_y.get('middle_trans', False)
             else:
                 middle_trans = False
-            output = self.seqTransEncoder(xseq, adaIN_para, middle_trans=middle_trans, layer_residual=layer_residual)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+
+            output = self.seqTransEncoder(xseq, adaIN_para,
+                                            middle_trans=middle_trans,
+                                            layer_residual=layer_residual)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
 
         elif self.arch == 'trans_dec':
             if self.emb_trans_dec:
@@ -486,6 +639,33 @@ class MDM(nn.Module):
             output_features = self.seqTransEncoder.outEachLayer(xseq, None, middle_trans=False)
         
         return output_features
+
+    def reconstruct(self, x, timesteps, y=None, mu=None):
+        """
+        mu: bs, d encoded motion features
+        x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
+        timesteps: [batch_size] (int)
+        """
+
+        emb = self.embed_timestep(timesteps)  # [1, bs, d]
+
+        force_mask = y.get('uncond', False)
+        emb += self.embed_text(self.mask_cond(mu, force_mask=force_mask))
+
+        x = self.input_process(x)
+        adaIN_para = None 
+
+       
+        if self.arch == 'trans_enc':
+            # adding the timestep embed
+            xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
+            xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
+            middle_trans = False
+            output = self.seqTransEncoder(xseq, adaIN_para, middle_trans=middle_trans, layer_residual=layer_residual)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+
+        output = self.output_process(output)  # [bs, njoints, nfeats, nframes]
+        return output
+
 
     def _apply(self, fn):
         super()._apply(fn)

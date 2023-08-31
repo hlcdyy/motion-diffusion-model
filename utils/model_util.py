@@ -1,4 +1,4 @@
-from model.mdm import MDM
+from model.mdm import MDM, MotionEncoder
 from diffusion import gaussian_diffusion as gd
 from diffusion.respace import SpacedDiffusion, space_timesteps
 from utils.parser_util import get_cond_mode
@@ -25,6 +25,16 @@ def create_model_and_diffusion(args, data):
     diffusion = create_gaussian_diffusion(args)
     return model, diffusion
 
+def create_motion_encoder(args, data):
+    model = MotionEncoder(**get_model_args(args, data))
+    return model
+
+def creat_mdm_diffusion_motionenc(args, data):
+    model = MDM(**get_model_args(args, data))
+    diffusion = create_gaussian_diffusion(args)
+    motion_enc = MotionEncoder(**get_model_args(args, data))
+    return model, diffusion, motion_enc
+
 
 def get_model_args(args, data):
 
@@ -50,13 +60,19 @@ def get_model_args(args, data):
         data_rep = 'hml_vec'
         njoints = 251
         nfeats = 1
+    
+    if hasattr(args, 'mdm_path'):
+        mdm_path = args.mdm_path
+    else:
+        mdm_path = ""
 
     return {'modeltype': '', 'njoints': njoints, 'nfeats': nfeats, 'num_actions': num_actions,
             'translation': True, 'pose_rep': 'rot6d', 'glob': True, 'glob_rot': True,
             'latent_dim': args.latent_dim, 'ff_size': 1024, 'num_layers': args.layers, 'num_heads': 4,
             'dropout': 0.1, 'activation': "gelu", 'data_rep': data_rep, 'cond_mode': cond_mode,
             'cond_mask_prob': args.cond_mask_prob, 'action_emb': action_emb, 'arch': args.arch,
-            'emb_trans_dec': args.emb_trans_dec, 'clip_version': clip_version, 'dataset': args.dataset}
+            'emb_trans_dec': args.emb_trans_dec, 'clip_version': clip_version, 'dataset': args.dataset,
+            'mdm_path': mdm_path}
 
 
 def create_gaussian_diffusion(args):

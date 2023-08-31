@@ -100,7 +100,28 @@ def add_model_options(parser):
     group.add_argument("--lambda_cont_vel", default=0.0, type=float, help="the transfered motion should have the same velocity direction with content motion")
     group.add_argument("--lambda_diff_sty", default=0.0, type=float,help="keep dispart between different motion type")
     
-
+def add_motion_encoder_options(parser):
+    group = parser.add_argument_group('model')
+    group.add_argument("--arch", default='trans_enc',
+                       choices=['trans_enc', 'trans_dec', 'gru'], type=str,
+                       help="Architecture types as reported in the paper.")
+    group.add_argument("--emb_trans_dec", default=False, type=bool,
+                       help="For trans_dec architecture only, if true, will inject condition as a class token"
+                            " (in addition to cross-attention).")
+    group.add_argument("--layers", default=8, type=int,
+                       help="Number of layers.")
+    group.add_argument("--latent_dim", default=512, type=int,
+                       help="Transformer/GRU width.")
+    group.add_argument("--cond_mask_prob", default=.1, type=float,
+                       help="The probability of masking the condition during training."
+                            " For classifier-free guidance learning.")
+    group.add_argument("--lambda_rcxyz", default=0.0, type=float, help="Joint positions loss.")
+    group.add_argument("--lambda_vel", default=0.0, type=float, help="Joint velocity loss.")
+    group.add_argument("--lambda_fc", default=0.0, type=float, help="Foot contact loss.")
+    group.add_argument("--unconstrained", action='store_true',
+                       help="Model is trained unconditionally. That is, it is constrained by neither text nor action. "
+                            "Currently tested on HumanAct12 only.")
+    group.add_argument("--mdm_path", default='./save/my_humanml_trans_enc_512/model000600161.pt', help="pretrained MDM model path")
 
 
 def add_data_options(parser):
@@ -217,8 +238,24 @@ def add_stytransfer_options(parser):
     group.add_argument("--style_dataset", default='style100', choices=['style100', 'bandai-1', 'bandai-2'], type=str,
                        help="Dataset name (choose from list).")
 
-    
-    
+
+def add_reconstruction_options(parser):
+    group = parser.add_argument_group('reconstruction')
+    group.add_argument("--mdm_path", default='./save/my_humanml_trans_enc_512/model000600161.pt', type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--motionenc_path", required=True, type=str,
+                       help="Path to model####.pt file for encoding original motion.")
+    group.add_argument("--output_dir", default='', type=str,
+                       help="Path to results dir (auto created by the script). "
+                            "If empty, will create dir in parallel to checkpoint.")
+    group.add_argument("--num_samples", default=10, type=int,
+                       help="Maximal number of prompts to sample, "
+                            "if loading dataset from file, this field will be ignored.")
+    group.add_argument("--num_repetitions", default=3, type=int,
+                       help="Number of repetitions, per sample (text prompt/action)")
+    group.add_argument("--guidance_param", default=2.5, type=float,
+                       help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
+
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
@@ -286,6 +323,14 @@ def train_args():
     add_training_options(parser)
     return parser.parse_args()
 
+def train_motion_encoder_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    add_motion_encoder_options(parser)
+    add_training_options(parser)
+    return parser.parse_args()
+
 def finetune_style_args():
     parser = ArgumentParser()
     add_base_options(parser) # device ...
@@ -302,6 +347,27 @@ def style_transfer_args():
     add_generate_options(parser)
     args = parse_and_load_from_model(parser)
     cond_mode = get_cond_mode(args)
+    
+    if (args.input_text or args.text_prompt) and cond_mode != 'text':
+        raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
+    elif (args.action_file or args.action_name) and cond_mode != 'action':
+        raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
+
+    return args
+
+
+def reconstruct_args():
+    parser = ArgumentParser()
+    # args specified by the user: (all other will be loaded from the model)
+    add_base_options(parser)
+    add_reconstruction_options(parser)
+    add_generate_options(parser)
+    group = parser.add_argument_group('style_reconstruct')
+    group.add_argument("--style_dataset", default='bandai-2', type=str,
+                       help="style datset names for reconstructing")  
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args)
+
     
     if (args.input_text or args.text_prompt) and cond_mode != 'text':
         raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
