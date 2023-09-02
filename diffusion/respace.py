@@ -95,6 +95,11 @@ class SpacedDiffusion(GaussianDiffusion):
         self, model, *args, **kwargs
     ):  # pylint: disable=signature-differs
         return super().training_losses(self._wrap_model(model), *args, **kwargs)
+    
+    def finetune_motionenc_losses(
+        self, model, *args, **kwargs
+    ):
+        return super().finetune_motionenc_losses(self._wrap_model(model), *args, **kwargs)
 
     def condition_mean(self, cond_fn, *args, **kwargs):
         return super().condition_mean(self._wrap_model(cond_fn), *args, **kwargs)
@@ -127,3 +132,4 @@ class _WrappedModel:
         if self.rescale_timesteps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
         return self.model(x, new_ts, **kwargs)
+    

@@ -166,6 +166,47 @@ def add_training_options(parser):
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file). if is directory, then find the latest file")
 
+def add_fintune_motion_enc_options(parser):
+    group = parser.add_argument_group('fintune motion encoder through style dataset')
+    group.add_argument("--save_dir", required=True, type=str,
+                       help="Path to save checkpoints and results.")
+    group.add_argument("--overwrite", action='store_true',
+                       help="If True, will enable to use an already existing save_dir.")
+    group.add_argument("--train_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform'], type=str,
+                       help="Choose platform to log results. NoPlatform means no logging.")
+    group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
+    group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
+    group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
+    group.add_argument("--eval_batch_size", default=32, type=int,
+                       help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
+                            "T2m precision calculation is based on fixed batch size 32.")
+    group.add_argument("--eval_split", default='test', choices=['val', 'test'], type=str,
+                       help="Which split to evaluate on during training.")
+    group.add_argument("--eval_during_training", action='store_true',
+                       help="If True, will run evaluation during training.")
+    group.add_argument("--eval_rep_times", default=3, type=int,
+                       help="Number of repetitions for evaluation loop during training.")
+    group.add_argument("--eval_num_samples", default=1_000, type=int,
+                       help="If -1, will use all samples in the specified split.")
+    group.add_argument("--log_interval", default=1_000, type=int,
+                       help="Log losses each N steps")
+    group.add_argument("--save_interval", default=50_000, type=int,
+                       help="Save checkpoints and run evaluation each N steps")
+    group.add_argument("--num_steps", default=600_000, type=int,
+                       help="Training will stop after the specified number of steps.")
+    group.add_argument("--num_frames", default=60, type=int,
+                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+    group.add_argument("--resume_checkpoint", required=True, type=str,
+                       help="If not empty, will start from the specified checkpoint (path to model###.pt file). if is directory, then find the latest file")
+    group.add_argument("--style_dataset", default='bandai-2', choices=['style100', 'bandai-1', 'bandai-2'], type=str,
+                       help="Dataset name (choose from list).")
+    
+    group.add_argument("--lambda_sty_cons", default=0.0, type=float, help="style consistent loss, motions from same style should have same style code.")
+    group.add_argument("--lambda_sty_trans", default=0.0, type=float, help="style transfer loss, output motion should have the same style code with style motion.")
+    group.add_argument("--lambda_cont_pers", default=0.0, type=float, help="content perserving loss, t2m motion generating with its own style should output t2m ground truth motion.")
+    group.add_argument("--lambda_cont_vel", default=0.0, type=float, help="the transfered motion should have the same velocity direction with content motion")
+    group.add_argument("--lambda_diff_sty", default=0.0, type=float,help="keep dispart between different motion type")
+
 
 def add_finetune_style_options(parser):
     group = parser.add_argument_group('style finetune')
@@ -330,6 +371,16 @@ def train_motion_encoder_args():
     add_motion_encoder_options(parser)
     add_training_options(parser)
     return parser.parse_args()
+
+def finetune_motion_encoder_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    add_motion_encoder_options(parser)
+    add_fintune_motion_enc_options(parser)
+    add_diffusion_options(parser)
+    return parser.parse_args()
+
 
 def finetune_style_args():
     parser = ArgumentParser()

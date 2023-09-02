@@ -611,7 +611,7 @@ class TrainLoop_Style:
 
 
 class TrainLoopMotionEncoder:
-    def __init__(self, args, train_platform, model, data):
+    def __init__(self, args, train_platform, model, data, diffusion=None):
         self.args = args
         self.dataset = args.dataset
         self.train_platform = train_platform
@@ -638,6 +638,8 @@ class TrainLoopMotionEncoder:
 
         self.save_dir = args.save_dir
         self._load_and_sync_parameters()
+        # for p in self.model.input_process.parameters():
+        #     print(p.requires_grad)
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
             use_fp16=self.use_fp16,
@@ -645,6 +647,11 @@ class TrainLoopMotionEncoder:
         )
 
         self.overwrite = args.overwrite
+        
+        self.diffusion = diffusion
+        if diffusion is not None:
+            self.schedule_sampler_type = 'uniform'
+            self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
 
         self.opt = AdamW(
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
@@ -666,11 +673,15 @@ class TrainLoopMotionEncoder:
         if resume_checkpoint:
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
             logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-            self.model.load_state_dict(
+            missing_keys, unexpected_keys = self.model.load_state_dict(
                 dist_util.load_state_dict(
                     resume_checkpoint, map_location=dist_util.dev()
-                )
+                ), strict=False
             )
+            assert len(unexpected_keys) == 0
+            assert all([k.startswith('clip_model.') or 
+                        k.startswith('mdm_model.') for k in missing_keys])
+            
 
     def _load_optimizer_state(self):
         # main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -684,7 +695,10 @@ class TrainLoopMotionEncoder:
             state_dict = dist_util.load_state_dict(
                 opt_checkpoint, map_location=dist_util.dev()
             )
-            self.opt.load_state_dict(state_dict)
+            try:
+                self.opt.load_state_dict(state_dict)
+            except:
+                pass
 
     def run_loop(self):
 
@@ -752,20 +766,41 @@ class TrainLoopMotionEncoder:
             micro = batch
             micro_cond = cond
             last_batch = (i + self.microbatch) >= batch.shape[0]
-
-            compute_losses = functools.partial(
-                self.training_losses,
-                self.model,
-                micro,
-                model_kwargs=micro_cond
-            )
+            
+            if self.diffusion is None:
+                compute_losses = functools.partial(
+                    self.training_losses,
+                    self.model,
+                    micro,
+                    model_kwargs=micro_cond
+                )
+            else:
+                t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
+                micro = self.model.mdm_model.re_encode(micro).detach()
+                compute_losses = functools.partial(
+                    self.diffusion.finetune_motionenc_losses,
+                    self.model,
+                    micro,
+                    t,
+                    model_kwargs=micro_cond
+                )
 
             losses = compute_losses()
 
-            loss = (losses["loss"])
-            log_motion_encoder_loss_dict(
-                {k: v for k, v in losses.items()}
-            )
+            if self.diffusion is not None:
+                if isinstance(self.schedule_sampler, LossAwareSampler):
+                    self.schedule_sampler.update_with_local_losses(
+                        t, losses["loss"].detach()
+                    )
+                loss = (losses["loss"] * weights).mean()
+                log_motion_encoder_finetune_loss_dict(
+                    {k: v for k, v in losses.items()}
+                )
+            else:
+                loss = (losses["loss"])
+                log_motion_encoder_loss_dict(
+                    {k: v for k, v in losses.items()}
+                )
             self.mp_trainer.backward(loss)
 
     def _anneal_lr(self):
@@ -791,7 +826,11 @@ class TrainLoopMotionEncoder:
 
             # Do not save CLIP weights
             clip_weights = [e for e in state_dict.keys() if e.startswith('clip_model.')]
+            mdm_weights = [e for e in state_dict.keys() if e.startswith('mdm_model.')]
             for e in clip_weights:
+                del state_dict[e]
+            
+            for e in mdm_weights:
                 del state_dict[e]
 
             logger.log(f"saving model...")
@@ -851,3 +890,7 @@ def log_loss_dict(diffusion, ts, losses):
 def log_motion_encoder_loss_dict(losses):
     for key, values in losses.items():
         logger.logkv_mean(key, values.item())
+
+def log_motion_encoder_finetune_loss_dict(losses):
+    for key, values in losses.items():
+        logger.logkv_mean(key, values.mean().item())

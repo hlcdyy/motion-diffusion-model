@@ -290,6 +290,8 @@ class MotionEncoder(nn.Module):
         
         self.input_feats = self.njoints*self.nfeats
 
+        self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
+
         self.muQuery = nn.Parameter(torch.randn(1, self.latent_dim))
         self.sigmaQuery = nn.Parameter(torch.randn(1, self.latent_dim))
         
@@ -304,7 +306,7 @@ class MotionEncoder(nn.Module):
                                                      num_layers=self.num_layers)
         
         self.clip_model = self.load_and_freeze_clip(clip_version)
-        self.input_process = self.load_and_freeze_inputprocess(modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+        self.input_process, self.mdm_model = self.load_and_freeze_inputprocess(modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
                  latent_dim, ff_size, num_layers, num_heads, dropout,
                  ablation, activation, legacy, data_rep, dataset, clip_dim,
                  arch, emb_trans_dec, clip_version, **kargs)
@@ -351,7 +353,7 @@ class MotionEncoder(nn.Module):
         for p in input_process.parameters():
             p.requires_grad = False
 
-        return input_process
+        return input_process, mdm_model
     
     def encode_text(self, raw_text):
         # raw_text - list (batch_size length) of strings with input text prompts
@@ -401,6 +403,63 @@ class MotionEncoder(nn.Module):
         logvar = final[1]
 
         return mu, enc_text
+    
+    def mask_cond(self, cond, force_mask=False):
+        bs, d = cond.shape
+        if force_mask:
+            return torch.zeros_like(cond)
+        elif self.training and self.cond_mask_prob > 0.:
+            mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_mask_prob).view(bs, 1)  # 1-> use null_cond, 0-> use real cond
+            return cond * (1. - mask)
+        else:
+            return cond
+    
+    def finetune_forward(self, nosied_x, timesteps, input_x, y=None):
+        """
+        x: [batch_size, njoints, nfeats, max_frames], motion shape
+        """
+        bs, njoints, nfeats, nframes = input_x.shape
+        emb = self.mdm_model.embed_timestep(timesteps)  # [1, bs, d]
+        input_x = self.input_process(input_x) #[seqlen, bs, d]
+        
+        if y is not None and y.get("mask", None) is not None:
+            mask = y.get("mask").squeeze(1).squeeze(1).bool()
+        else:
+            mask = torch.ones((bs, nframes), dtype=bool, device=x.device)
+    
+        xseq = torch.cat((self.muQuery[:1][None].repeat(1, bs, 1), self.sigmaQuery[:1][None].repeat(1, bs, 1), input_x), axis=0)
+
+        # add positional encoding
+        xseq = self.sequence_pos_encoder(xseq)
+
+        # create a bigger mask, to allow attend to mu and sigma
+        muandsigmaMask = torch.ones((bs, 2), dtype=bool, device=input_x.device)
+
+        maskseq = torch.cat((muandsigmaMask, mask), axis=1)
+
+        final = self.seqTransEncoder(xseq, src_key_padding_mask=~maskseq)
+        mu = final[0]
+        logvar = final[1]
+        
+        force_mask = y.get('uncond', False)
+        emb += self.mdm_model.embed_text(self.mask_cond(mu, force_mask=force_mask))
+
+        nosied_x = self.input_process(nosied_x)
+        adaIN_para = None 
+       
+
+        # adding the timestep embed
+        xseq = torch.cat((emb, nosied_x), axis=0)  # [seqlen+1, bs, d]
+        xseq = self.mdm_model.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
+        middle_trans = False
+
+        output = self.mdm_model.seqTransEncoder(xseq, adaIN_para,
+                                        middle_trans=middle_trans,
+                                        layer_residual=None)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+
+        output = self.mdm_model.output_process(output)  # [bs, njoints, nfeats, nframes]
+
+        return output
     
 
 class MDM(nn.Module):

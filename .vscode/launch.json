@@ -5,6 +5,35 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: my_motion_enc_512_fintune",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.fintune_motion_encoder", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save/my_motion_enc_512_finetune_bandai-2",
+                "--dataset",
+                "humanml",
+                "--style_dataset",
+                "bandai-2",
+                "--resume_checkpoint",
+                "save/my_motion_enc_512",
+                "--overwrite",
+                "--num_steps",
+                "80_000",
+                "--save_interval",
+                "20_000",
+                "--lr",
+                "1e-5",
+                "--train_platform_type",
+                "TensorboardPlatform",
+            ]
+            
+        },
+        {
             "name": "Python: train_motion_encoder",
             "type": "python",
             "request": "launch",
@@ -12,7 +41,7 @@
             "module": "train.train_motion_encoder",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args":[
+            "args": [
                 "--save_dir",
                 "save/my_motion_enc_512",
                 "--dataset",
@@ -20,7 +49,6 @@
                 "--overwrite",
                 "--train_platform_type",
                 "TensorboardPlatform",
-        
             ]
         },
         {
@@ -68,7 +96,6 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                //   "-m", "train.train_style_finetune"
                 "--model_path",
                 "save/finetune_style100_middle/model000631161.pt",
                 "--num_samples",
@@ -89,7 +116,6 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                //   "-m", "train.train_style_finetune"
                 "--save_dir",
                 "save/finetune_style100_middle_dispart_style_debug",
                 "--dataset",

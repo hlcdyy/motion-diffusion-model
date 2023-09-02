@@ -12,7 +12,8 @@ def load_model_wo_clip(model, state_dict):
     assert all([k.startswith('clip_model.') or 
                 k.startswith('sty_enc.') or 
                 k.startswith('adaIN.') or 
-                k.startswith('sequence_pos_encoder_shift.') for k in missing_keys])
+                k.startswith('sequence_pos_encoder_shift.') or 
+                k.startswith('mdm_model.')for k in missing_keys])
 
 # def load_finetune_model(model, state_dict):
 #     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
@@ -29,11 +30,17 @@ def create_motion_encoder(args, data):
     model = MotionEncoder(**get_model_args(args, data))
     return model
 
+def create_motion_encoder_and_diffusion(args, data):
+    model = MotionEncoder(**get_model_args(args, data))
+    diffusion = create_gaussian_diffusion(args)
+    return model, diffusion
+
 def creat_mdm_diffusion_motionenc(args, data):
     model = MDM(**get_model_args(args, data))
     diffusion = create_gaussian_diffusion(args)
     motion_enc = MotionEncoder(**get_model_args(args, data))
     return model, diffusion, motion_enc
+
 
 
 def get_model_args(args, data):
