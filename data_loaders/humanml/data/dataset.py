@@ -391,7 +391,8 @@ class BandaiDataset(data.Dataset):
                             data_dict[new_name] = {'motion': sub_motion,
                                                     'length': sub_length,
                                                     'text':[text_dict],
-                                                    'style_name':style}
+                                                    'style_name':style,
+                                                    'content': content}
                             new_name_list.append(new_name)
                             length_list.append(sub_length)
 
@@ -407,7 +408,8 @@ class BandaiDataset(data.Dataset):
                         data_dict[new_name] = {'motion': sub_motion,
                                                     'length': sub_length,
                                                     'text':[text_dict],
-                                                    'style_name': style}
+                                                    'style_name': style,
+                                                    'content': content}
                         new_name_list.append(new_name)
                         length_list.append(sub_length)
 
@@ -469,6 +471,144 @@ class BandaiDataset(data.Dataset):
     
         return caption, motion, m_length, style_name
 
+class BandaiDatasetPairs(data.Dataset):
+    def __init__(self, opt, mean, std, split, offset=40):
+        self.opt = opt
+        self.max_length = 20
+        self.pointer = 0
+        self.max_motion_length = opt.max_motion_length
+        min_motion_len = 40 if self.opt.dataset_name in['bandai-1', 'bandai-2'] else 24
+        
+        data_dict = {}
+        
+        if self.opt.dataset_name == 'bandai-1':
+            from dataset.bandai1_split import train_list, test_list
+            if split == 'eval':
+                split = 'test'
+            contents = eval(split+'_list')
+
+        if self.opt.dataset_name == 'bandai-2':
+            from dataset.bandai2_split import train_list, test_list
+            if split == 'eval':
+                split = 'test'
+            contents = eval(split+'_list')
+            
+        
+        new_name_list = []
+        length_list = []
+        categories = {}
+
+        files = os.listdir(opt.motion_dir)
+        for file in files:            
+            style = file.split('_')[-2]
+            content = file.split('_')[-3]
+            if content in contents:
+                try:
+                    motion = np.load(pjoin(opt.motion_dir, file))
+                    if len(motion) < min_motion_len:
+                        continue
+                    
+                    description = content.replace("-", " ") + " " + style.replace("-", " ")
+            
+                    rand_len = np.random.randint(min_motion_len, min(len(motion), opt.max_motion_length+1))
+                    sub_motion = motion[:rand_len]
+                    sub_length = rand_len
+                    text_dict = {}
+                    text_dict['caption'] = description
+                    new_name = file
+                    data_dict[new_name] = {'motion': sub_motion,
+                                                'length': sub_length,
+                                                'text':[text_dict],
+                                                'style_name': style,
+                                                'content': content}
+                    new_name_list.append(new_name)
+                    length_list.append(sub_length)
+                    categories.setdefault(content, {}).setdefault(style, []).append(new_name)
+                
+                except:
+                    pass
+
+        name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
+
+        self.mean = mean
+        self.std = std
+        self.length_arr = np.array(length_list)
+        self.data_dict = data_dict
+        self.name_list = name_list
+        self.categories = categories
+        
+        
+        self.reset_max_len(self.max_length)
+
+    def reset_max_len(self, length):
+        assert length <= self.max_motion_length
+        self.pointer = np.searchsorted(self.length_arr, length)
+        print("Pointer Pointing at %d"%self.pointer)
+        self.max_length = length
+
+    def inv_transform(self, data):
+        return data * self.std + self.mean
+
+    def __len__(self):
+        return len(self.data_dict) - self.pointer
+    
+    def __getitem__(self, item):
+        idx = self.pointer + item
+        data = self.data_dict[self.name_list[idx]]
+        
+        content = data["content"]
+        motion, m_length, text_list, style_name = data['motion'], data['length'], data['text'], data['style_name']
+        # Randomly select a caption
+        text_data = random.choice(text_list)
+
+        caption = text_data['caption']
+
+        # Randomly select a normal style motion with the same content
+        if self.categories[content].get("normal", None) is None:
+            normal_data  = None
+            normal_motion = None
+            normal_m_length = None
+            normal_text_list = None
+            normal_style_name = None
+            normal_caption = None
+            min_m_length = m_length
+        else:
+            normal_data =self.data_dict[random.choice(self.categories[content]["normal"])]
+            normal_motion, normal_m_length, normal_text_list, normal_style_name = normal_data['motion'], normal_data['length'], normal_data['text'], normal_data['style_name']
+            normal_text_data = random.choice(normal_text_list)
+            normal_caption = normal_text_data['caption']
+            min_m_length = min(m_length, normal_m_length)
+
+        # Crop the motions in to times of 4, and introduce small variations
+        if self.opt.unit_length < 10:
+            coin2 = np.random.choice(['single', 'single', 'double'])
+        else:
+            coin2 = 'single'
+
+        if coin2 == 'double':
+            min_m_length = (min_m_length // self.opt.unit_length - 1) * self.opt.unit_length
+        elif coin2 == 'single':
+            min_m_length = (min_m_length // self.opt.unit_length) * self.opt.unit_length
+        idx = random.randint(0, len(motion) - min_m_length)
+
+
+        motion = motion[idx:idx+min_m_length]
+        if self.categories[content].get("normal", None) is not None:
+            normal_motion = normal_motion[idx:idx+min_m_length]
+            normal_motion = (normal_motion - self.mean) / self.std
+
+        "Z Normalization"
+        motion = (motion - self.mean) / self.std
+    
+        if min_m_length < self.max_motion_length:
+            motion = np.concatenate([motion,
+                                     np.zeros((self.max_motion_length - min_m_length, motion.shape[1]))
+                                     ], axis=0)
+            if self.categories[content].get("normal", None) is not None:
+                normal_motion = np.concatenate([normal_motion,
+                                        np.zeros((self.max_motion_length - min_m_length, normal_motion.shape[1]))
+                                        ], axis=0)
+        return caption, motion, min_m_length, style_name, normal_caption, normal_motion, min_m_length, normal_style_name
    
 
 '''For use of training text motion matching model, and evaluations'''
@@ -557,6 +697,9 @@ class Text2MotionDatasetV2(data.Dataset):
 
     def inv_transform(self, data):
         return data * self.std + self.mean
+    
+    def inv_transform_tensor(self, data):
+        return data * torch.Tensor(self.std).to(data.device) + torch.Tensor(self.mean).to(data.device)
 
     def __len__(self):
         return len(self.data_dict) - self.pointer
@@ -1085,7 +1228,10 @@ class HumanML3D_Style(data.Dataset):
             if self.dataset_name == 'style100':
                 self.style_dataset = StyleMotionDataset(self.opt, self.mean, self.std, self.split, offset=40)
             elif self.dataset_name in ["bandai-1", "bandai-2"]:
-                self.style_dataset = BandaiDataset(self.opt,  self.mean, self.std, self.split, offset=40)
+                if kwargs.get("pairs", False):
+                    self.style_dataset = BandaiDatasetPairs(self.opt, self.mean, self.std, self.split, offset=40)
+                else:
+                    self.style_dataset = BandaiDataset(self.opt,  self.mean, self.std, self.split, offset=40)
                                
         assert len(self.style_dataset) > 1, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

@@ -5,6 +5,210 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: creat_init_transfer_module",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.resume_model_parameters", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--transfer_module_path",
+                "save/my_style_transfer_module_zero/model000000000.pt",
+                    "--zero_conv",
+    
+            ]
+        },
+        {
+            "name": "Python: learned_transfer_in_clipspace",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "sample.style_transfer_module", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--transfer_module_path",
+                // "save/my_style_transfer_module_zero/model_pretrained.pt",
+                "save/my_style_transfer_module_zero/model000018000.pt",
+                "--num_samples",
+                "5",
+                "--seed",
+                "1243",
+                "--zero_conv",
+            ]
+        },
+        {
+            "name": "Python: residual_transfer_in_clipspace",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "sample.new_style_transfer_residual", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--motionenc_path",
+                // "save/my_motion_enc_512_finetune_encmdm_bandai-2_addtextloss/model000620161.pt",
+                "save/my_motion_enc_512_finetune_encmdm_bandai-2_addtextloss/model000680161.pt",
+                "--num_samples",
+                "5",
+                "--seed",
+                "1243"
+            ]
+        },
+        {
+            "name": "Python: adain_transfer_in_clipspace",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "sample.new_style_transfer_adain", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--motionenc_path",
+                "save/my_motion_enc_512_finetune_encmdm_bandai-2/model000600161.pt",
+                "--num_samples",
+                "5",
+                "--seed",
+                "1243"
+            ]
+        },
+        {
+            "name": "Python: train_my_transfer_module_zero",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_transfer_module", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save/my_style_transfer_module_zero",
+                "--dataset",
+                "humanml",
+                "--style_dataset",
+                "bandai-2",
+                "--overwrite",
+                "--num_steps",
+                "8_000",
+                "--save_interval",
+                "1_000",
+                "--lr",
+                "1e-4",
+                "--train_platform_type",
+                "TensorboardPlatform",
+                "--zero_conv", 
+                "--resume_checkpoint",
+                "save/my_style_transfer_module_zero/model_pretrained.pt",
+                "--lambda_bone",
+                "0.1",
+                "--log_interval",
+                "100"
+
+            ]
+            
+        },
+        {
+            "name": "Python: train_my_transfer_module_zero_lambda_1",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_transfer_module", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save/my_style_transfer_module_zero_lambdal1_1",
+                "--dataset",
+                "humanml",
+                "--style_dataset",
+                "bandai-2",
+                "--overwrite",
+                "--num_steps",
+                "8_000",
+                "--save_interval",
+                "1_000",
+                "--lr",
+                "1e-4",
+                "--train_platform_type",
+                "TensorboardPlatform",
+                "--zero_conv", 
+                "--resume_checkpoint",
+                "save/my_style_transfer_module_zero/model_pretrained.pt",
+                "--lambda_l1",
+                "1",
+                "--lambda_bone",
+                "0.1",
+                "--log_interval",
+                "100"
+            ]
+            
+        },
+        {
+            "name": "Python: train_my_transfer_module_zero_lambda_0",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_transfer_module", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save/my_style_transfer_module_zero_lambdal1_0",
+                "--dataset",
+                "humanml",
+                "--style_dataset",
+                "bandai-2",
+                "--overwrite",
+                "--num_steps",
+                "8_000",
+                "--save_interval",
+                "1_000",
+                "--lr",
+                "1e-4",
+                "--train_platform_type",
+                "TensorboardPlatform",
+                "--zero_conv", 
+                "--resume_checkpoint",
+                "save/my_style_transfer_module_zero/model_pretrained.pt",
+                "--lambda_l1",
+                "0",
+                "--lambda_bone", 
+                "0.1",
+                "--log_interval",
+                "100"
+
+            ]
+            
+        },
+        {
+            "name": "Python: train_my_transfer_module",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_transfer_module", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save/my_style_transfer_module",
+                "--dataset",
+                "humanml",
+                "--style_dataset",
+                "bandai-2",
+                "--overwrite",
+                "--num_steps",
+                "8_000",
+                "--save_interval",
+                "1_000",
+                "--lr",
+                "1e-4",
+                "--train_platform_type",
+                "TensorboardPlatform",
+            ]
+            
+        },
+        {
             "name": "Python: my_motion_enc_512_fintune",
             "type": "python",
             "request": "launch",
@@ -14,7 +218,7 @@
             "justMyCode": true,
             "args": [
                 "--save_dir",
-                "save/my_motion_enc_512_finetune_bandai-2",
+                "save/my_motion_enc_512_finetune_encmdm_bandai-2_addtextloss",
                 "--dataset",
                 "humanml",
                 "--style_dataset",
@@ -25,13 +229,32 @@
                 "--num_steps",
                 "80_000",
                 "--save_interval",
-                "20_000",
+                "10_000",
                 "--lr",
                 "1e-5",
                 "--train_platform_type",
                 "TensorboardPlatform",
             ]
             
+        },
+        
+        {
+            "name": "Python: motion_reconstruction",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "sample.motion_reconstruction", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--motionenc_path",
+                "save/my_motion_enc_512_finetune_encmdm_bandai-2_addtextloss/model000610161.pt",
+                // "save/my_motion_enc_512_finetune_encmdm_bandai-2/model000600161.pt",
+                "--num_samples",
+                "5",
+                "--seed",
+                "1243"
+            ]
         },
         {
             "name": "Python: train_motion_encoder",
@@ -49,6 +272,8 @@
                 "--overwrite",
                 "--train_platform_type",
                 "TensorboardPlatform",
+                // "--resume_checkpoint",
+                // "save/my_motion_enc_512"
             ]
         },
         {

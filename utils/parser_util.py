@@ -124,6 +124,22 @@ def add_motion_encoder_options(parser):
     group.add_argument("--mdm_path", default='./save/my_humanml_trans_enc_512/model000600161.pt', help="pretrained MDM model path")
 
 
+def add_transfer_module_options(parser):
+    group = parser.add_argument_group('style_transfer_module')
+    group.add_argument("--arch", default='trans_enc',
+                       choices=['trans_enc', 'trans_dec', 'gru'], type=str,
+                       help="Architecture types as reported in the paper.")
+    group.add_argument("--emb_trans_dec", default=False, type=bool,
+                       help="For trans_dec architecture only, if true, will inject condition as a class token"
+                            " (in addition to cross-attention).")
+    group.add_argument("--layers", default=8, type=int,
+                       help="Number of layers.")
+    group.add_argument("--latent_dim", default=512, type=int,
+                       help="Transformer/GRU width.")
+    group.add_argument("--mdm_path", default='./save/my_humanml_trans_enc_512/model000600161.pt', help="pretrained MDM model path")
+
+
+
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
     group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 
@@ -245,7 +261,49 @@ def add_finetune_style_options(parser):
     group.add_argument("--resume_checkpoint", required=True, type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file). if is directory, then find the latest file")
     
+def add_train_stylemodule_options(parser):
+    group = parser.add_argument_group('train style transfer module.')
+    group.add_argument("--style_dataset", default='style100', choices=['style100', 'bandai-1', 'bandai-2'], type=str,
+                       help="Dataset name (choose from list).")
+    group.add_argument("--motion_enc_path", default = './save/my_motion_enc_512_finetune_encmdm_bandai-2_addtextloss/model000680161.pt', type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--save_dir", required=True, type=str,
+                       help="Path to save the finetune checkpoints and results.")
+    group.add_argument("--overwrite", action='store_true',
+                       help="If True, will enable to use an already existing save_dir.")
+
+    group.add_argument("--train_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform'], type=str,
+                       help="Choose platform to log results. NoPlatform means no logging.")
+    group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
+    group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
+    group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
+    group.add_argument("--eval_batch_size", default=32, type=int,
+                       help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
+                            "T2m precision calculation is based on fixed batch size 32.")
+    group.add_argument("--eval_split", default='test', choices=['val', 'test'], type=str,
+                       help="Which split to evaluate on during training.")
+    group.add_argument("--eval_during_training", action='store_true',
+                       help="If True, will run evaluation during training.")
+    group.add_argument("--eval_rep_times", default=3, type=int,
+                       help="Number of repetitions for evaluation loop during training.")
+    group.add_argument("--eval_num_samples", default=1_000, type=int,
+                       help="If -1, will use all samples in the specified split.")
+    group.add_argument("--log_interval", default=1_000, type=int,
+                       help="Log losses each N steps")
+    group.add_argument("--save_interval", default=5_000, type=int,
+                       help="Save checkpoints and run evaluation each N steps")
+    group.add_argument("--num_steps", default=60_000, type=int,
+                       help="Training will stop after the specified number of steps.")
+    group.add_argument("--num_frames", default=60, type=int,
+                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+    group.add_argument("--resume_checkpoint", default="", type=str,
+                       help="If not empty, will start from the specified checkpoint (path to model###.pt file). if is directory, then find the latest file")
+    group.add_argument("--zero_conv", action='store_true', help="whether use default zero_conv")
+    group.add_argument("--lambda_l1", default=10, type=float, help="the lambda of L1 loss")
+    group.add_argument("--lambda_bone", default=0, type=float, help = "the lambda of bone regularization")
+
     
+
 def add_sampling_options(parser):
     group = parser.add_argument_group('sampling')
     group.add_argument("--model_path", required=True, type=str,
@@ -297,7 +355,29 @@ def add_reconstruction_options(parser):
     group.add_argument("--guidance_param", default=2.5, type=float,
                        help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
 
+def add_transfer_module_args(parser):
+    group = parser.add_argument_group('transfer module')
+    group.add_argument("--mdm_path", default='./save/my_humanml_trans_enc_512/model000600161.pt', type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--motion_enc_path", default = './save/my_motion_enc_512_finetune_encmdm_bandai-2_addtextloss/model000680161.pt', type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--transfer_module_path", required=True, type=str,
+                       help="Path to style transfer moduel.")
+    group.add_argument("--output_dir", default='', type=str,
+                       help="Path to results dir (auto created by the script). "
+                            "If empty, will create dir in parallel to checkpoint.")
+    group.add_argument("--num_samples", default=10, type=int,
+                       help="Maximal number of prompts to sample, "
+                            "if loading dataset from file, this field will be ignored.")
+    group.add_argument("--num_repetitions", default=3, type=int,
+                       help="Number of repetitions, per sample (text prompt/action)")
+    group.add_argument("--guidance_param", default=2.5, type=float,
+                       help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
+    group.add_argument("--style_dataset", default='bandai-2', type=str,
+                       help="style datset names for evaluating style transfer module.") 
+    group.add_argument("--zero_conv", action='store_true', help="whether use zero_conv")
 
+    
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
     group.add_argument("--motion_length", default=6.0, type=float,
@@ -391,6 +471,16 @@ def finetune_style_args():
     add_finetune_style_options(parser) # lr, save_dir, style dataset
     return parser.parse_args()
 
+def train_style_module_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    # add_transfer_module_options(parser)
+    add_motion_encoder_options(parser)
+    add_train_stylemodule_options(parser)
+    return parser.parse_args()
+    
+        
 def style_transfer_args():
     parser = ArgumentParser()
     add_base_options(parser)
@@ -406,6 +496,21 @@ def style_transfer_args():
 
     return args
 
+def style_trans_evaluation_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_transfer_module_args(parser)
+    add_generate_options(parser)
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args)
+
+    if (args.input_text or args.text_prompt) and cond_mode != 'text':
+        raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
+    elif (args.action_file or args.action_name) and cond_mode != 'action':
+        raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
+
+    return args
+  
 
 def reconstruct_args():
     parser = ArgumentParser()

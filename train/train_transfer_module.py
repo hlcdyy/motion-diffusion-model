@@ -5,18 +5,18 @@ Train a diffusion model on images.
 
 import os
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import json
 from utils.fixseed import fixseed
-from utils.parser_util import finetune_motion_encoder_args
+from utils.parser_util import train_style_module_args
 from utils import dist_util
-from train.training_loop import TrainLoopMotionEncoder
+from train.training_loop import TrainLoopTransferModule
 from data_loaders.get_data import get_dataset_loader
-from utils.model_util import create_motion_encoder_and_diffusion
+from utils.model_util import creat_style_trans_module
 from train.train_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform  # required for the eval operation
 
 def main():
-    args = finetune_motion_encoder_args()
+    args = train_style_module_args()
     fixseed(args.seed)
     train_platform_type = eval(args.train_platform_type)
     train_platform = train_platform_type(args.save_dir)
@@ -35,18 +35,22 @@ def main():
     dist_util.setup_dist(args.device)
 
     print("creating data loader...")
-    data = get_dataset_loader(name=args.style_dataset, batch_size=args.batch_size, num_frames=args.num_frames)
+    data = get_dataset_loader(name=args.style_dataset, batch_size=args.batch_size, num_frames=args.num_frames, pairs=True)
     t2m_data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
 
     print("creating model...")
-    model, diffusion = create_motion_encoder_and_diffusion(args, data)
+    model = creat_style_trans_module(args, data)
+
+    # for i, ((motion, cond), (normal_motion, normal_cond)) in enumerate(data):
+    #     print(motion.shape, normal_motion.shape)
+        
     # mdm_model.to(dist_util.dev())
     # diffusion.to(dist_util.dev())
     model.to(dist_util.dev())
 
     print('Total params: %.2fM' % (sum(p.numel() for p in model.parameters_wo_clip()) / 1000000.0))
     print("Training...")
-    TrainLoopMotionEncoder(args, train_platform, model, data, t2m_data, diffusion).run_loop()
+    TrainLoopTransferModule(args, train_platform, model, data, t2m_data).run_loop()
     train_platform.close()
 
 if __name__ == "__main__":

@@ -434,6 +434,35 @@ def recover_from_ric(data, joints_num):
     positions = torch.cat([r_pos.unsqueeze(-2), positions], dim=-2)
 
     return positions # B T J 3
+
+
+def recover_from_vel(data, joints_num):
+    r_rot_quat, r_pos = recover_root_rot_pos(data)
+    positions = data[..., 4:(joints_num - 1) * 3 + 4]
+    positions = positions.view(positions.shape[:-1] + (-1, 3)) 
+
+    '''Add Y-axis rotation to local joints'''
+    # positions = qrot(qinv(r_rot_quat[..., None, :]).expand(positions.shape[:-1] + (4,)), positions)
+    # revised by HL
+    positions = qrot(r_rot_quat[..., None, :].expand(positions.shape[:-1] + (4, )), positions)
+
+    '''Add root XZ to joints'''
+    positions[..., 0] += r_pos[..., 0:1]
+    positions[..., 2] += r_pos[..., 2:3]
+
+    '''Concate root and joints'''
+    positions = torch.cat([r_pos.unsqueeze(-2), positions], dim=-2)
+    start_indx = 1 + 2 + 1 + (joints_num - 1) * 3 + (joints_num - 1) * 6
+    end_indx = start_indx + (joints_num) * 3
+    vels = data[..., start_indx: end_indx]
+    vels = vels.view(vels.shape[:-1] + (-1, 3))
+    vels = qrot(r_rot_quat[..., None, :].expand(vels.shape[:-1] + (4, )), vels)
+    re_positions = torch.zeros_like(vels)
+    re_positions[..., 0, :, :] = positions[..., 0, :, :]
+    re_positions[..., 1:, :, :] = vels[..., :-1, :, :]
+    re_positions = torch.cumsum(re_positions, dim=-3)
+    return re_positions # B T J 3
+
 '''
 For Text2Motion Dataset
 '''

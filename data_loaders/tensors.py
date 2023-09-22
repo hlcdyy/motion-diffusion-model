@@ -90,3 +90,21 @@ def t2m_style_collate(batch):
         'style': b[3],
     } for b in batch]
     return collate(adapted_batch)
+
+def style_pairs_collate(batch):
+    adapted_batch = [{
+        'inp': torch.tensor(b[1].T).float().unsqueeze(1),
+        'text': b[0],
+        'lengths': b[2],
+        'style': b[3],
+    } for b in batch]
+    
+    adapted_normal_batch = [
+        {
+            'inp': torch.Tensor(b[5].T).float().unsqueeze(1),
+            'text': b[4],
+            'lengths': b[6],
+            'style': b[7],
+        } if b[5] is not None else None for b in batch
+    ]
+    return collate(adapted_batch), collate(adapted_normal_batch)

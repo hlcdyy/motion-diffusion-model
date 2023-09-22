@@ -12,7 +12,7 @@ from utils.model_util import creat_diffusion_motionenc, load_model_wo_clip
 from utils import dist_util
 from model.cfg_sampler import ClassifierFreeSampleModel
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.humanml.scripts.motion_process import recover_from_ric, recover_from_vel
+from data_loaders.humanml.scripts.motion_process import recover_from_ric
 import data_loaders.humanml.utils.paramUtil as paramUtil
 from data_loaders.humanml.utils.plot_script import plot_3d_motion, plot_3d_array
 import imageio
@@ -35,7 +35,7 @@ def main():
     dist_util.setup_dist(args.device)
     if out_path == '':
         out_path = os.path.join(os.path.dirname(args.motionenc_path),
-                                'reconstruction_{}_{}_seed{}'.format(name, niter, args.seed))
+                                'residual_stytrans_{}_{}_seed{}'.format(name, niter, args.seed))
         if args.text_prompt != '':
             out_path += '_' + args.text_prompt.replace(' ', '_').replace('.', '')
         elif args.input_text != '':
@@ -66,8 +66,7 @@ def main():
 
     motion_enc.to(dist_util.dev())
     motion_enc.eval() # disable random masking
-    
-    
+
     if is_using_data:
         iterator = iter(data)
         t2m_motion, model_kwargs = next(iterator)
@@ -78,10 +77,11 @@ def main():
         style_motion = style_motion.float().to(dist_util.dev())
         model_contkwargs = deepcopy(model_kwargs)
         model_stykwargs = deepcopy(model_kwargs)
+        model_rawkwargs = deepcopy(model_kwargs)
         style_iterator = iter(sty_data)
         bandai_motion, model_bandaikwargs = next(style_iterator)
         bandai_motion = bandai_motion.to(dist_util.dev())
-        model_bandaikwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in model_bandaikwargs["y"].items()}
+        model_bandaikwargs["y"] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in model_kwargs["y"].items()}
 
     else:
         collate_args = [{'inp': torch.zeros(n_frames), 'tokens': None, 'lengths': n_frames}] * args.num_samples
@@ -106,62 +106,42 @@ def main():
         model_contkwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
         model_stykwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
         model_bandaikwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
+        model_rawkwargs['y']['scale'] = torch.ones(args.batch_size,device=dist_util.dev()) * args.guidance_param                      
         
-    mu, _ = motion_enc(t2m_motion)
-    # norm_motion = mdm_model.model.re_encode(norm_motion)
-    # style_motion = mdm_model.model.re_encode(style_motion)
-    # norm_motion = motion_enc.mdm_model.re_encode(norm_motion)
-    # style_motion = motion_enc.mdm_model.re_encode(style_motion)
+
+    norm_motion = motion_enc.mdm_model.re_encode(norm_motion)
+    style_motion = motion_enc.mdm_model.re_encode(style_motion)
     content_mu, _ = motion_enc(norm_motion)
     style_mu, _= motion_enc(style_motion)
-
-    # bandai_motion = mdm_model.model.re_encode(bandai_motion)
-    # bandai_motion = motion_enc.mdm_model.re_encode(bandai_motion)
-    bandai_mu, _ = motion_enc(bandai_motion, **model_bandaikwargs)
+    t2m_mu, _= motion_enc(t2m_motion)
     
-    t = torch.ones(bandai_motion.shape[0]).long().to(dist_util.dev()) * 999
-    noise = torch.randn_like(bandai_motion)
-    x_t = diffusion.q_sample(bandai_motion, t, noise=noise)
-    # model_output = motion_enc.finetune_forward(x_t, diffusion._scale_timesteps(t), bandai_motion, **model_bandaikwargs)
+    # sty_mean = torch.mean(style_mu, -1, keepdim=True)
+    # sty_std = torch.std(style_mu, -1, keepdim=True)
+    # cont_mean = torch.mean(content_mu, -1, keepdim=True)
+    # cont_std = torch.std(content_mu, -1, keepdim=True)
+    # content_mu = (content_mu - cont_mean)/cont_std
+    # content_mu = content_mu * sty_std + sty_mean
+    residual = style_mu - content_mu
 
-    # print(model_bandaikwargs["y"]["lengths"])
-    # print(torch.sum(bandai_mask_1.long(), -1), torch.sum(bandai_mask.long(), -1))
-    # print(torch.sum(bandai_mask_1.long() - bandai_mask.long()))
-    model_kwargs["mu"] = mu
     model_contkwargs["mu"] = content_mu
     model_stykwargs["mu"] = style_mu
-    model_bandaikwargs["mu"] = bandai_mu
-
-    x_t = torch.randn_like(x_t).to(dist_util.dev())
-    x_start = motion_enc.mdm_model(x_t, t, **model_bandaikwargs)
-    model_output = x_start
-    # with torch.no_grad():
-    #     for i in tqdm(range(999, -1, -1)):
-    #         t = torch.ones([x_t.shape[0]], device=dist_util.dev(), dtype=torch.long) * i
-    #         x_start = mdm_model(x_t, t, **model_bandaikwargs)
-    #         x_t, _, _ = diffusion.q_posterior_mean_variance(
-    #             x_start, x_t=x_t, t=t
-    #         )
-    #         nonzero_mask = (
-    #         (t != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
-    #     ) 
-    #         x_t = x_t + nonzero_mask * torch.exp(0.5 * out["log_variance"]) * noise
-    #     model_output = x_t
+    model_kwargs["mu"] = t2m_mu + residual
 
     sample_fn = diffusion.p_sample_loop
-    sample_rec = sample_fn(
-            motion_enc.mdm_model,
-            # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
-            (args.batch_size, motion_enc.mdm_model.njoints, motion_enc.mdm_model.nfeats, max_frames),  # BUG FIX
-            clip_denoised=False,
-            model_kwargs=model_kwargs,
-            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-            init_image=None,
-            progress=True,
-            dump_steps=None,
-            noise=None,
-            const_noise=False,
-        )
+
+    sample_t2m = sample_fn(
+        motion_enc.mdm_model,
+        (args.batch_size, motion_enc.mdm_model.njoints, motion_enc.mdm_model.nfeats, max_frames),  # BUG FIX
+        clip_denoised=False,
+        model_kwargs=model_rawkwargs,
+        skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+        init_image=None,
+        progress=True,
+        dump_steps=None,
+        noise=None,
+        const_noise=False,
+        
+    )
     
     sample_cont = sample_fn(
             motion_enc.mdm_model,
@@ -191,12 +171,12 @@ def main():
             const_noise=False,
         )
     
-    sample_bandai = sample_fn(
+    sample_t2m_style = sample_fn(
             motion_enc.mdm_model,
             # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
             (args.batch_size, motion_enc.mdm_model.njoints, motion_enc.mdm_model.nfeats, max_frames),  # BUG FIX
             clip_denoised=False,
-            model_kwargs=model_bandaikwargs,
+            model_kwargs=model_kwargs,
             skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
             init_image=None,
             progress=True,
@@ -205,25 +185,14 @@ def main():
             const_noise=False,
         )
     
-    # sample_cont = motion_enc.mdm_model.re_encode(sample_cont)
-    # sample_sty = motion_enc.mdm_model.re_encode(sample_sty)
 
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
     os.makedirs(out_path)
     
     if motion_enc.mdm_model.data_rep == 'hml_vec':
-        n_joints = 22 if sample_rec.shape[1] == 263 else 21
+        n_joints = 22 if sample_cont.shape[1] == 263 else 21
         
-        sample_rec = data.dataset.t2m_dataset.inv_transform(sample_rec.cpu().permute(0, 2, 3, 1)).float()
-        sample_rec = recover_from_ric(sample_rec, n_joints) # B 1 T J 3 
-        sample_rec = sample_rec.view(-1, *sample_rec.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
-
-        sample_gt = data.dataset.t2m_dataset.inv_transform(t2m_motion.cpu().permute(0, 2, 3, 1)).float()
-        # sample_gt = recover_from_ric(sample_gt, n_joints) # B 1 T J 3 
-        sample_gt = recover_from_vel(sample_gt, n_joints)
-        sample_gt = sample_gt.view(-1, *sample_gt.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
-
         sample_cont = data.dataset.t2m_dataset.inv_transform(sample_cont.cpu().permute(0, 2, 3, 1)).float()
         sample_cont = recover_from_ric(sample_cont, n_joints) # B 1 T J 3 
         sample_cont = sample_cont.view(-1, *sample_cont.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
@@ -231,62 +200,47 @@ def main():
         sample_sty = data.dataset.t2m_dataset.inv_transform(sample_sty.cpu().permute(0, 2, 3, 1)).float()
         sample_sty = recover_from_ric(sample_sty, n_joints) # B 1 T J 3 
         sample_sty = sample_sty.view(-1, *sample_sty.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
+        
+        sample_t2m_gt = data.dataset.t2m_dataset.inv_transform(t2m_motion.detach().cpu().permute(0, 2, 3, 1)).float()
+        sample_t2m_gt = recover_from_ric(sample_t2m_gt, n_joints) # B 1 T J 3 
+        sample_t2m_gt = sample_t2m_gt.view(-1, *sample_t2m_gt.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
+        
+        sample_t2m_style = data.dataset.t2m_dataset.inv_transform(sample_t2m_style.detach().cpu().permute(0, 2, 3, 1)).float()
+        sample_t2m_style = recover_from_ric(sample_t2m_style, n_joints) # B 1 T J 3 
+        sample_t2m_style = sample_t2m_style.view(-1, *sample_t2m_style.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
+        
+        sample_t2m = data.dataset.t2m_dataset.inv_transform(sample_t2m.cpu().permute(0, 2, 3, 1)).float()
+        sample_t2m = recover_from_ric(sample_t2m, n_joints) # B 1 T J 3 
+        sample_t2m = sample_t2m.view(-1, *sample_t2m.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
 
-        sample_bandai = data.dataset.t2m_dataset.inv_transform(sample_bandai.cpu().permute(0, 2, 3, 1)).float()
-        sample_bandai = recover_from_ric(sample_bandai, n_joints) # B 1 T J 3 
-        sample_bandai = sample_bandai.view(-1, *sample_bandai.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
-
-        sample_bandai_gt = data.dataset.t2m_dataset.inv_transform(bandai_motion.detach().cpu().permute(0, 2, 3, 1)).float()
-        # sample_bandai_gt = recover_from_ric(sample_bandai_gt, n_joints) # B 1 T J 3 
-        sample_bandai_gt = recover_from_vel(sample_bandai_gt, n_joints)
-        sample_bandai_gt = sample_bandai_gt.view(-1, *sample_bandai_gt.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
-
-        sample_model_output = data.dataset.t2m_dataset.inv_transform(model_output.detach().cpu().permute(0, 2, 3, 1)).float()
-        sample_model_output = recover_from_ric(sample_model_output, n_joints) # B 1 T J 3 
-        sample_model_output = sample_model_output.view(-1, *sample_model_output.shape[2:]).permute(0, 2, 3, 1)  # B J 3 T 
-
-    rot2xyz_pose_rep = 'xyz' if motion_enc.mdm_model.data_rep in ['xyz', 'hml_vec'] else motion_enc.mdm_model.data_rep
-    rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
-    sample_rec = motion_enc.mdm_model.rot2xyz(x=sample_rec, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
-                            jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
-                            get_rotations_back=False) 
-    sample_gt = motion_enc.mdm_model.rot2xyz(x=sample_gt, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
-                            jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
-                            get_rotations_back=False) 
-   
 
     caption = model_kwargs['y']['text']
     # caption = model_kwargs["sty_y"]["text"]
     
-    sample_rec = sample_rec.cpu().numpy().transpose(0, 3, 1, 2)
-    sample_gt = sample_gt.cpu().numpy().transpose(0, 3, 1, 2)
+    
     sample_cont = sample_cont.cpu().numpy().transpose(0, 3, 1, 2)
     sample_sty = sample_sty.cpu().numpy().transpose(0, 3, 1, 2)
-    sample_bandai = sample_bandai.cpu().numpy().transpose(0, 3, 1, 2)
-    sample_bandai_gt = sample_bandai_gt.cpu().numpy().transpose(0, 3, 1, 2)
-    sample_model_output = sample_model_output.cpu().numpy().transpose(0, 3, 1, 2)
+        
+    sample_t2m_gt = sample_t2m_gt.cpu().numpy().transpose(0, 3, 1, 2)
+    sample_t2m_style = sample_t2m_style.cpu().numpy().transpose(0, 3, 1, 2)
 
-    sample_array = plot_3d_array([sample_rec[0], None, paramUtil.t2m_kinematic_chain, caption[0] + "_reconstruction"])
-    imageio.mimsave(os.path.join(out_path, 'reconstruct_results.gif'), np.array(sample_array), duration=6)
-    gt_array = plot_3d_array([sample_gt[0][:model_kwargs["y"]["lengths"][0]], None, paramUtil.t2m_kinematic_chain, caption[0]])
-    imageio.mimsave(os.path.join(out_path, 'gt_results.gif'), np.array(gt_array), duration=int(model_kwargs["y"]["lengths"][0]/20))
-    # sample_styarray = plot_3d_array([sample_sty[0], None, paramUtil.t2m_kinematic_chain, caption[0]+"_stytrans"])
-    # imageio.mimsave(os.path.join(out_path, 'sample_results_stytrans.gif'), np.array(sample_styarray), fps=20)
+    sample_t2m = sample_t2m.cpu().numpy().transpose(0, 3, 1, 2)
+   
+
     cont_array = plot_3d_array([sample_cont[0][:n_frames], None, paramUtil.t2m_kinematic_chain, "content_motion_rec"])
     imageio.mimsave(os.path.join(out_path, 'reconstruct_content.gif'), np.array(cont_array), duration=6)
 
     sty_array = plot_3d_array([sample_sty[0][:n_frames], None, paramUtil.t2m_kinematic_chain, "stylized_motion_rec"])
     imageio.mimsave(os.path.join(out_path, 'reconstruct_style.gif'), np.array(sty_array), duration=6)
-    
-    bandai_array = plot_3d_array([sample_bandai[0][:model_bandaikwargs["y"]["lengths"][0]], None, paramUtil.t2m_kinematic_chain, "bandai-rec"])
-    imageio.mimsave(os.path.join(out_path, 'bandai_rec.gif'), np.array(bandai_array), duration=model_bandaikwargs["y"]["lengths"][0]/20)
-    
-    bandai_gt_array = plot_3d_array([sample_bandai_gt[0][:model_bandaikwargs["y"]["lengths"][0]], None, paramUtil.t2m_kinematic_chain, "bandai-gt"])
-    imageio.mimsave(os.path.join(out_path, 'bandai_gt.gif'), np.array(bandai_gt_array), duration=model_bandaikwargs["y"]["lengths"][0]/20)
+    for i in range(args.num_samples):
+        t2m_source = plot_3d_array([sample_t2m_gt[i][:model_kwargs['y']["lengths"][i]], None, paramUtil.t2m_kinematic_chain, caption[i]])
+        imageio.mimsave(os.path.join(out_path, f't2m_source_{i}.gif'), np.array(t2m_source), duration=model_kwargs['y']["lengths"][i]/20)
+        
+        t2m_pred = plot_3d_array([sample_t2m[i][:model_kwargs['y']["lengths"][i]], None, paramUtil.t2m_kinematic_chain, caption[i]])
+        imageio.mimsave(os.path.join(out_path, f't2m_pred_{i}.gif'), np.array(t2m_pred), duration=model_kwargs['y']["lengths"][i]/20)
 
-    model_output_array = plot_3d_array([sample_model_output[0][:model_bandaikwargs["y"]["lengths"][0]], None, paramUtil.t2m_kinematic_chain, "bandai-model-output"])
-    imageio.mimsave(os.path.join(out_path, 'bandai_model_output.gif'), np.array(model_output_array), duration=model_bandaikwargs["y"]["lengths"][0]/20)
-
+        t2m_style_trans = plot_3d_array([sample_t2m_style[i][:model_kwargs['y']["lengths"][i]], None, paramUtil.t2m_kinematic_chain, caption[i]+" style_trans"])
+        imageio.mimsave(os.path.join(out_path, f't2m_style_trans_{i}.gif'), np.array(t2m_style_trans), duration=model_kwargs['y']["lengths"][i]/20)
 
 def load_dataset(args, max_frames, n_frames):
     data = get_dataset_loader(name=args.dataset,
@@ -310,8 +264,10 @@ def GetBandaiExample(sty_loader, n_frames):
     norm_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_walk_normal_013.npy")
     # style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_raise-up-both-hands_feminine_014.npy")
     # style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_raise-up-both-hands_active_033.npy")
-    style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_walk_active_017.npy")
-
+    # style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_walk_active_017.npy")
+    # style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_walk_elderly_009.npy")
+    style_npy = os.path.join(sty_loader.dataset.opt.motion_dir, "dataset-2_walk_feminine_017.npy")
+    
     norm_motion = np.load(norm_npy)
     style_motion = np.load(style_npy)
     

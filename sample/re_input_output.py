@@ -128,6 +128,9 @@ def main():
     style_motion = style_motion.to(dist_util.dev()).float()
     norm_features = model.model.getLayerLatent(norm_motion)
     style_features = model.model.getLayerLatent(style_motion)
+
+    re_norm_motion = model.model.re_encode(norm_motion)
+    re_style_motion = model.model.re_encode(style_motion)
     residual_features = []
     for i, norm_feat in enumerate(norm_features):
         residual_features.append((style_features[i] - norm_feat).detach())
@@ -198,6 +201,17 @@ def main():
         style_motion = recover_from_ric(style_motion, n_joints)
         style_motion = style_motion.view(-1, *style_motion.shape[2:]).permute(0, 2, 3, 1)
 
+        re_norm_motion = data.dataset.t2m_dataset.inv_transform(re_norm_motion.cpu().detach().numpy().transpose(0, 2, 3, 1))
+        re_norm_motion = torch.from_numpy(re_norm_motion).to(args.device)
+        re_norm_motion = recover_from_ric(re_norm_motion, n_joints)
+        re_norm_motion = re_norm_motion.view(-1, *re_norm_motion.shape[2:]).permute(0, 2, 3, 1)
+
+        re_style_motion = data.dataset.t2m_dataset.inv_transform(re_style_motion.cpu().detach().numpy().transpose(0, 2, 3, 1))
+        re_style_motion = torch.from_numpy(re_style_motion).to(args.device)
+        re_style_motion = recover_from_ric(re_style_motion, n_joints)
+        re_style_motion = re_style_motion.view(-1, *re_style_motion.shape[2:]).permute(0, 2, 3, 1)
+
+        
 
     rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
     rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
@@ -219,6 +233,8 @@ def main():
     sample_sty = sample_sty.cpu().numpy().transpose(0, 3, 1, 2)
     norm_motion = norm_motion.cpu().numpy().transpose(0, 3, 1, 2)
     style_motion = style_motion.cpu().numpy().transpose(0, 3, 1, 2)
+    re_norm_motion = re_norm_motion.cpu().numpy().transpose(0, 3, 1, 2)
+    re_style_motion = re_style_motion.cpu().numpy().transpose(0, 3, 1, 2)
     sample_array = plot_3d_array([sample_wosty[0], None, paramUtil.t2m_kinematic_chain, caption[0]])
     imageio.mimsave(os.path.join(out_path, 'sample_results.gif'), np.array(sample_array), duration=196/20)
     re_array = plot_3d_array([re_motion[0], None, paramUtil.t2m_kinematic_chain, caption[0]+"_re"])
@@ -231,6 +247,12 @@ def main():
 
     style_array = plot_3d_array([style_motion[0], None, paramUtil.t2m_kinematic_chain, "stylized_motion"])
     imageio.mimsave(os.path.join(out_path, 'stylized_motion.gif'), np.array(style_array), duration=120/20)
+    
+    re_normal_array = plot_3d_array([re_norm_motion[0], None, paramUtil.t2m_kinematic_chain, "re_normal_motion"])
+    imageio.mimsave(os.path.join(out_path, 're_normal_motion.gif'), np.array(re_normal_array), duration=120/20)
+
+    re_style_array = plot_3d_array([re_style_motion[0], None, paramUtil.t2m_kinematic_chain, "re_stylized_motion"])
+    imageio.mimsave(os.path.join(out_path, 're_stylized_motion.gif'), np.array(re_style_array), duration=120/20)
 
 
 def load_dataset(args, max_frames, n_frames):

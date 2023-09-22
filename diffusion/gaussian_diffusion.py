@@ -1519,11 +1519,11 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
-            
-            terms["rot_mse"] = self.masked_l2(target, model_output, mask) # mean_flat(rot_mse)
-               
 
-            terms["loss"] = terms["rot_mse"]
+            encoder_loss = self.masked_l2(target, model_output, mask) # mean_flat(rot_mse)
+            terms["encoder_mse"] = encoder_loss
+            
+            terms["loss"] = encoder_loss
 
         else:
             raise NotImplementedError(self.loss_type)
