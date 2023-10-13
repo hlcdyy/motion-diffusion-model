@@ -1,7 +1,8 @@
-from model.mdm import MDM, MotionEncoder, StyleTransferModule
+from model.mdm import MDM, MotionEncoder, StyleTransferModule, DiffuseTrasnfer
 from diffusion import gaussian_diffusion as gd
 from diffusion.respace import SpacedDiffusion, space_timesteps
 from utils.parser_util import get_cond_mode
+from diffusion.inpainting_gaussian_diffusion import InpaintingGaussianDiffusion
 
 
 def load_model_wo_clip(model, state_dict):
@@ -54,6 +55,10 @@ def creat_style_trans_module(args, data):
     model = StyleTransferModule(**get_transfer_args(args))
     return model
 
+def creat_stylediffuse_and_diffusion(args, ModelClass=DiffuseTrasnfer, DiffusionClass=InpaintingGaussianDiffusion):
+    model = ModelClass(**get_transfer_args(args))
+    diffusion = create_gaussian_diffusion(args, DiffusionClass)
+    return model, diffusion
 
 def get_model_args(args, data):
 
@@ -150,22 +155,24 @@ def get_transfer_args(args):
             'mdm_path': mdm_path, 'motion_enc_path': motion_enc_path, 'zero_conv': zero_conv}
 
 
-def create_gaussian_diffusion(args):
+def create_gaussian_diffusion(args, DiffusionClass=SpacedDiffusion):
     # default params
     predict_xstart = True  # we always predict x_start (a.k.a. x0), that's our deal!
-    steps = 1000
+    steps = args.diffusion_steps
     scale_beta = 1.  # no scaling
     timestep_respacing = ''  # can be used for ddim sampling, we don't use it.
     learn_sigma = False
     rescale_timesteps = False
-
+    
+    print(f"number of diffusion-steps: {steps}")
+    
     betas = gd.get_named_beta_schedule(args.noise_schedule, steps, scale_beta)
     loss_type = gd.LossType.MSE
 
     if not timestep_respacing:
         timestep_respacing = [steps]
 
-    return SpacedDiffusion(
+    return DiffusionClass(
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
         model_mean_type=(
@@ -185,10 +192,10 @@ def create_gaussian_diffusion(args):
         lambda_vel=args.lambda_vel,
         lambda_rcxyz=args.lambda_rcxyz,
         lambda_fc=args.lambda_fc,
-        lambda_sty_cons = args.lambda_sty_cons, 
-        lambda_sty_trans = args.lambda_sty_trans,
-        lambda_cont_pers = args.lambda_cont_pers,
-        lambda_cont_vel = args.lambda_cont_vel, 
-        lambda_diff_sty = args.lambda_diff_sty,
+        lambda_sty_cons = args.lambda_sty_cons if hasattr(args, "lambda_sty_cons") else 0,
+        lambda_sty_trans = args.lambda_sty_trans if hasattr(args, "lambda_sty_trans") else 0,
+        lambda_cont_pers = args.lambda_cont_pers if hasattr(args, "lambda_cont_pers") else 0,
+        lambda_cont_vel = args.lambda_cont_vel if hasattr(args, "lambda_cont_vel") else 0,
+        lambda_diff_sty = args.lambda_diff_sty if hasattr(args, "lambda_diff_sty") else 0,
         
     )

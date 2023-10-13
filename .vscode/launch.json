@@ -15,8 +15,43 @@
             "args": [
                 "--transfer_module_path",
                 "save/my_style_transfer_module_zero/model000000000.pt",
-                    "--zero_conv",
+                "--zero_conv",
     
+            ]
+        },
+        {
+            "name": "Python: creat_init_stylediffusion_module",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.resume_model_parameters", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--transfer_module_path",
+                "save/my_style_diffusion/model000000000.pt",
+                "--inpainting_mask",
+                "root_horizontal",
+    
+            ]
+        },
+        {
+            "name": "Python: learned_diffusion_transfer_in_clipspace",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "sample.style_diffusion_transfer_module", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--transfer_module_path",
+                "save/my_style_diffusion/model_pretrained.pt",
+                "--num_samples",
+                "5",
+                "--seed",
+                "10",
+                "--inpainting_mask",
+                "root_horizontal", 
             ]
         },
         {
@@ -30,7 +65,7 @@
             "args": [
                 "--transfer_module_path",
                 // "save/my_style_transfer_module_zero/model_pretrained.pt",
-                "save/my_style_transfer_module_zero/model000018000.pt",
+                "save/my_style_transfer_module_zero/model000102261.pt",
                 "--num_samples",
                 "5",
                 "--seed",
@@ -72,6 +107,42 @@
                 "--seed",
                 "1243"
             ]
+        },
+        {
+            "name": "Python: train_my_style_diffusion",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_transfer_diffusion_module", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save/my_style_diffusion",
+                "--dataset",
+                "humanml",
+                "--style_dataset",
+                "bandai-2",
+                "--overwrite",
+                "--num_steps",
+                "8_000",
+                "--save_interval",
+                "1_000",
+                "--lr",
+                "1e-4",
+                "--train_platform_type",
+                "TensorboardPlatform",
+                "--resume_checkpoint",
+                "save/my_style_diffusion/model_pretrained.pt",
+                "--log_interval",
+                "100",
+                "--inpainting_mask",
+                "root_horizontal", 
+                "--diffusion_steps",
+                "1000"
+
+            ]
+            
         },
         {
             "name": "Python: train_my_transfer_module_zero",

@@ -8,7 +8,7 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 
 import enum
 import math
-
+import torch.nn as nn
 import numpy as np
 import torch
 import torch as th
@@ -102,6 +102,12 @@ class LossType(enum.Enum):
         return self == LossType.KL or self == LossType.RESCALED_KL
 
 
+loss_ce = nn.CrossEntropyLoss()
+loss_mse = nn.MSELoss()
+cosine_sim = nn.CosineSimilarity(dim=1, eps=1e-6)
+loss_L1 = nn.L1Loss(reduction='none')
+
+
 class GaussianDiffusion:
     """
     Utilities for training and sampling diffusion models.
@@ -140,7 +146,8 @@ class GaussianDiffusion:
         lambda_sty_trans = 0.,
         lambda_cont_pers = 0.,
         lambda_cont_vel = 0.,
-        lambda_diff_sty = 0.
+        lambda_diff_sty = 0.,
+        lambda_l1 = 10.
         
     ):
         self.model_mean_type = model_mean_type
@@ -160,6 +167,7 @@ class GaussianDiffusion:
         self.lambda_root_vel = lambda_root_vel
         self.lambda_vel_rcxyz = lambda_vel_rcxyz
         self.lambda_fc = lambda_fc
+        self.lambda_l1 = lambda_l1
 
         self.lambda_sty_cons = lambda_sty_cons
         self.lambda_sty_trans = lambda_sty_trans
@@ -225,6 +233,18 @@ class GaussianDiffusion:
         mse_loss_val = loss / non_zero_elements
         # print('mse_loss_val', mse_loss_val)
         return mse_loss_val
+
+    def compute_loss_sd(self, a, b):
+
+        a_norm = a / (a.norm(dim=-1, keepdim=True) + 1e-8)
+        b_norm = b / (b.norm(dim=-1, keepdim=True) + 1e-8)
+
+        cos = cosine_sim(a_norm, b_norm)
+        cosine_loss = (1 - cos)
+            
+        l1_loss = loss_L1(a, b).mean(1)
+        return cosine_loss, l1_loss
+        
 
 
     def q_mean_variance(self, x_start, t):
@@ -322,10 +342,12 @@ class GaussianDiffusion:
             inpainting_mask, inpainted_motion = model_kwargs['y']['inpainting_mask'], model_kwargs['y']['inpainted_motion']
             assert self.model_mean_type == ModelMeanType.START_X, 'This feature supports only X_start pred for mow!'
             assert model_output.shape == inpainting_mask.shape == inpainted_motion.shape
-            model_output = (model_output * ~inpainting_mask) + (inpainted_motion * inpainting_mask)
-            # print('model_output', model_output.shape, model_output)
-            # print('inpainting_mask', inpainting_mask.shape, inpainting_mask[0,0,0,:])
-            # print('inpainted_motion', inpainted_motion.shape, inpainted_motion)
+
+            # inpainting_mask supports both boolean and scalar values
+            ones = torch.ones_like(inpainting_mask, dtype=torch.float, device=inpainting_mask.device)
+            inpainting_mask = ones * inpainting_mask
+            model_output = (model_output * (1 - inpainting_mask)) + (inpainted_motion * inpainting_mask)
+
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
@@ -714,7 +736,7 @@ class GaussianDiffusion:
 
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
-            img = self.q_sample(init_image, my_t, img)
+            img = self.q_sample(init_image, my_t, img, model_kwargs=model_kwargs)
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1447,6 +1469,116 @@ class GaussianDiffusion:
                             (self.lambda_cont_vel * terms.get('cont_vel_mse', 0)) + \
                             (self.lambda_diff_sty * terms.get('sty_diff_loss', 0))
 
+        else:
+            raise NotImplementedError(self.loss_type)
+
+        return terms
+    
+
+    def training_stylediffuse_losses(self, model, x_start, t, model_kwargs=None, noise=None, batch_normal=None, batch_style=None, normal_kwargs=None, style_kwargs=None):
+        """
+        Compute training losses for a single timestep.
+
+        :param model: the model to evaluate loss on.
+        :param x_start: the [N x C x ...] tensor of inputs.
+        :param t: a batch of timestep indices.
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :param noise: if specified, the specific Gaussian noise to try to remove.
+        :return: a dict with the key "loss" containing a tensor of shape [N].
+                 Some mean or variance settings may also have other keys.
+        """             
+                                                
+        # enc = model.model._modules['module']  
+        motion_enc = model.model.motion_enc
+        mask = model_kwargs['y']['mask']
+
+        style_mu, _ = motion_enc(batch_style, **style_kwargs)
+        normal_mu, _ = motion_enc(batch_normal, **normal_kwargs)
+        t2m_mu, _ = motion_enc(x_start, **model_kwargs)
+
+        model_kwargs1 = deepcopy(model_kwargs)
+        model_kwargs1["content_code"] = normal_mu.detach()
+        model_kwargs1["style_code"] = style_mu.detach()
+        model_kwargs1["mu"] = t2m_mu.detach() + model_kwargs1["style_code"] - model_kwargs1["content_code"]
+        
+        if model_kwargs is None:
+            model_kwargs = {}
+        if noise is None:
+            noise = th.randn_like(x_start)
+        x_t = self.q_sample(x_start, t, noise=noise,  model_kwargs=model_kwargs1)
+
+        terms = {}
+
+        if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
+            terms["loss"] = self._vb_terms_bpd(
+                model=model,
+                x_start=x_start,
+                x_t=x_t,
+                t=t,
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+            )["output"]
+            if self.loss_type == LossType.RESCALED_KL:
+                terms["loss"] *= self.num_timesteps
+        elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
+            model_output = model(x_t, self._scale_timesteps(t), **model_kwargs1)
+
+            if self.model_var_type in [
+                ModelVarType.LEARNED,
+                ModelVarType.LEARNED_RANGE,
+            ]:
+                B, C = x_t.shape[:2]
+                assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+                model_output, model_var_values = th.split(model_output, C, dim=1)
+                # Learn the variance using the variational bound, but don't let
+                # it affect our mean prediction.
+                frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
+                terms["vb"] = self._vb_terms_bpd(
+                    model=lambda *args, r=frozen_out: r,
+                    x_start=x_start,
+                    x_t=x_t,
+                    t=t,
+                    clip_denoised=False,
+                )["output"]
+                if self.loss_type == LossType.RESCALED_MSE:
+                    # Divide by 1000 for equivalence with initial implementation.
+                    # Without a factor of 1/1000, the VB term hurts the MSE term.
+                    terms["vb"] *= self.num_timesteps / 1000.0
+
+            target = {
+                ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
+                    x_start=x_start, x_t=x_t, t=t
+                )[0],
+                ModelMeanType.START_X: x_start,
+                ModelMeanType.EPSILON: noise,
+            }[self.model_mean_type]
+            assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
+            
+            # terms["rot_mse"] = self.masked_l2(target, model_output, mask) # mean_flat(rot_mse)
+            
+            # t2m_mu, _ = motion_enc(target, **model_kwargs)
+            transferred_mu, _ = motion_enc(model_output, **model_kwargs)
+            
+            gt_style = style_mu - normal_mu
+            trans_style = transferred_mu - t2m_mu
+            
+            # gt_style_norm = gt_style / (gt_style.norm(dim=-1, keepdim=True) + 1e-8)
+            # trans_style_norm = trans_style / (trans_style.norm(dim=-1, keepdim=True) + 1e-8)
+
+            # cos = cosine_sim(gt_style_norm, trans_style_norm)
+            # cosine_loss = (1 - cos)
+            # terms["style_cosine"] = cosine_loss
+            
+            # l1_loss = loss_L1(gt_style, trans_style)
+            # terms["style_l1"] = l1_loss
+
+            terms['style_cosine'], terms["style_l1"]  = self.compute_loss_sd(gt_style, trans_style)
+        
+            terms["loss_sd"] = terms["style_cosine"] + self.lambda_l1 * terms["style_l1"]
+
+            terms["loss"] = terms["loss_sd"]
+                      
         else:
             raise NotImplementedError(self.loss_type)
 

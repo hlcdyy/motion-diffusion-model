@@ -338,6 +338,17 @@ def add_stytransfer_options(parser):
                        help="Dataset name (choose from list).")
 
 
+def add_style_inpainting_options(parser):
+    group = parser.add_argument_group('style inpainting')
+    group.add_argument("--inpainting_mask", default='', type=str, 
+                       help="Comma separated list of masks to use. In sampling, if not specified, will load the mask from the used model/s. \
+                       Every element could be one of: \
+                           root, root_horizontal, in_between, prefix, upper_body, lower_body, \
+                           or one of the joints in the humanml body format: \
+                           pelvis, left_hip, right_hip, spine1, left_knee, right_knee, spine2, left_ankle, right_ankle, spine3, left_foot, \
+                            right_foot, neck, left_collar, right_collar, head, left_shoulder, right_shoulder, left_elbow, right_elbow, left_wrist, right_wrist,")
+
+
 def add_reconstruction_options(parser):
     group = parser.add_argument_group('reconstruction')
     group.add_argument("--mdm_path", default='./save/my_humanml_trans_enc_512/model000600161.pt', type=str,
@@ -479,6 +490,32 @@ def train_style_module_args():
     add_motion_encoder_options(parser)
     add_train_stylemodule_options(parser)
     return parser.parse_args()
+
+def train_style_diffusion_module_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    add_motion_encoder_options(parser)
+    add_train_stylemodule_options(parser)
+    add_diffusion_options(parser)
+    add_style_inpainting_options(parser)
+    return parser.parse_args()
+    
+def eval_style_diffusion_module_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_transfer_module_args(parser)
+    add_generate_options(parser)
+    add_style_inpainting_options(parser)
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args) 
+
+    if (args.input_text or args.text_prompt) and cond_mode != 'text':
+        raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
+    elif (args.action_file or args.action_name) and cond_mode != 'action':
+        raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
+
+    return args
     
         
 def style_transfer_args():

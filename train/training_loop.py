@@ -1046,6 +1046,11 @@ class TrainLoopTransferModule:
                             continue
                         else:
                             self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
+                        # for name, param in self.model.named_parameters():
+                        #     if param.requires_grad and name == 'control_seqTransEncoder.layers.1.norm1.weight':
+                        #         print(name, param.grad)
+                        # print("******************")
+
 
                 if self.step % self.save_interval == 0:
                     self.save()
@@ -1088,7 +1093,8 @@ class TrainLoopTransferModule:
         cosine_loss = (1 - cos).mean()
         terms["style_cosine"] = cosine_loss
         
-        l1_loss = loss_L1(style, trans_style).mean()
+        # l1_loss = loss_L1(style, trans_style).mean()
+        l1_loss = loss_mse(style, trans_style).mean()
         terms["style_l1"] = l1_loss
         
         
@@ -1096,8 +1102,9 @@ class TrainLoopTransferModule:
         source_bones = self.calculate_bone(t2m_batch).squeeze().permute(0,2,3,1)
         bone_regularization = self.masked_l2(transferred_bones, source_bones, t2m_kwargs["y"]["mask"]).mean()
         terms["bone_regularization"] = bone_regularization
-
+        
         terms["loss"] = cosine_loss + self.args.lambda_l1 * l1_loss + self.args.lambda_bone * bone_regularization
+        # terms["loss"] = self.args.lambda_l1 * l1_loss + self.args.lambda_bone * bone_regularization
         
         return terms
     
@@ -1172,6 +1179,10 @@ class TrainLoopTransferModule:
                 {k: v for k, v in losses.items()}
             )
             self.mp_trainer.backward(loss)
+            # for name, param in self.model.named_parameters():
+            #     if param.requires_grad:
+            #         print(name, param.grad)
+            # print("******************")
 
     def _anneal_lr(self):
         if not self.lr_anneal_steps:
@@ -1214,6 +1225,287 @@ class TrainLoopTransferModule:
         ) as f:
             torch.save(self.opt.state_dict(), f)
 
+
+class TrainLoopStyleDiffusion:
+    def __init__(self, args, train_platform, model, data, t2m_data=None, diffusion=None):
+        self.args = args
+        self.dataset = args.dataset
+        self.train_platform = train_platform
+        self.model = model
+        self.data = data
+        self.t2m_data = t2m_data
+        self.batch_size = args.batch_size
+        self.microbatch = args.batch_size  # deprecating this option
+        self.lr = args.lr
+        self.log_interval = args.log_interval
+        self.save_interval = args.save_interval
+        self.resume_checkpoint = args.resume_checkpoint
+        self.use_fp16 = False  # deprecating this option
+        self.fp16_scale_growth = 1e-3  # deprecating this option
+        self.weight_decay = args.weight_decay
+        self.lr_anneal_steps = args.lr_anneal_steps
+
+        self.step = 0
+        self.resume_step = 0
+        self.global_batch = self.batch_size # * dist.get_world_size()
+        self.num_steps = args.num_steps
+        self.num_epochs = self.num_steps // len(self.data) + 1
+
+        self.sync_cuda = torch.cuda.is_available()
+
+        self.save_dir = args.save_dir
+        self._load_and_sync_parameters()
+
+        self.mp_trainer = MixedPrecisionTrainer(
+            model=self.model,
+            use_fp16=self.use_fp16,
+            fp16_scale_growth=self.fp16_scale_growth,
+        )
+
+        self.overwrite = args.overwrite
+
+        self.l2_loss = lambda a, b: (a - b) ** 2 
+        
+        self.diffusion = diffusion
+        if diffusion is not None:
+            self.schedule_sampler_type = 'uniform'
+            self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
+
+        self.opt = AdamW(
+            self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
+        )
+        if self.resume_step:
+            self._load_optimizer_state()
+            # Model was resumed, either due to a restart or a checkpoint
+            # being specified at the command line.
+
+        self.device = torch.device("cpu")
+        if torch.cuda.is_available() and dist_util.dev() != 'cpu':
+            self.device = torch.device(dist_util.dev())
+
+        
+    def _load_and_sync_parameters(self):
+        # resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
+        resume_checkpoint = find_resume_checkpoint(self.resume_checkpoint, 'model') if os.path.isdir(self.resume_checkpoint) else self.resume_checkpoint
+
+        if resume_checkpoint:
+            self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
+            logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
+            missing_keys, unexpected_keys = self.model.load_state_dict(
+                dist_util.load_state_dict(
+                    resume_checkpoint, map_location=dist_util.dev()
+                ), strict=False
+            )
+            assert len(unexpected_keys) == 0
+            assert all([k.startswith("motion_enc.") for k in missing_keys])
+    
+
+    def _load_optimizer_state(self):
+        # main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
+        main_checkpoint = find_resume_checkpoint(self.resume_checkpoint, 'opt') if os.path.isdir(self.resume_checkpoint) else self.resume_checkpoint
+
+        opt_checkpoint = bf.join(
+            bf.dirname(main_checkpoint), f"opt{self.resume_step:09}.pt"
+        )
+        if bf.exists(opt_checkpoint):
+            logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
+            state_dict = dist_util.load_state_dict(
+                opt_checkpoint, map_location=dist_util.dev()
+            )
+            try:
+                self.opt.load_state_dict(state_dict)
+            except:
+                pass
+
+    def run_loop(self):
+
+        for epoch in range(self.num_epochs):
+            print(f'Starting epoch {epoch}')
+            
+            if self.t2m_data is not None:
+                if len(self.data.dataset) < len(self.t2m_data.dataset):
+                    self.data_cycle = cycle(self.data)
+                    self.t2m_data_cycle = self.t2m_data
+                else:
+                    self.t2m_data_cycle = cycle(self.t2m_data)
+                    self.data_cycle = self.data   
+            if self.t2m_data is not None:
+                zip_motion = zip(self.data_cycle, self.t2m_data_cycle)
+            else:
+                zip_motion = self.data
+                
+            for arxiv, t2m_arxiv in tqdm(zip_motion):
+                
+                if self.t2m_data is not None:
+                    (motion, cond), (normal_motion, normal_cond) = arxiv
+                    t2m_motion, t2m_cond = t2m_arxiv
+                else:
+                    motion, cond = arxiv
+                    normal_motion, normal_cond = t2m_arxiv  
+                    t2m_motion = None
+                    t2m_cond = None
+                if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
+                    break
+
+                motion = motion.to(self.device)
+                cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
+
+                normal_motion = normal_motion.to(self.device)
+                normal_cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in normal_cond['y'].items()}
+                if self.t2m_data is not None:
+                    t2m_motion = t2m_motion.to(self.device)
+                    t2m_cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in t2m_cond['y'].items()}
+
+                self.run_step(motion, cond, normal_motion, normal_cond, t2m_motion, t2m_cond)
+                if self.step % self.log_interval == 0:
+                    for k,v in logger.get_current().name2val.items():
+                        if k == 'loss':
+                            print('step[{}]: loss[{:0.5f}]'.format(self.step+self.resume_step, v))
+
+                        if k in ['step', 'samples'] or '_q' in k:
+                            continue
+                        else:
+                            self.train_platform.report_scalar(name=k, value=v, iteration=self.step, group_name='Loss')
+                        # for name, param in self.model.named_parameters():
+                        #     if param.requires_grad and name == 'control_seqTransEncoder.layers.1.norm1.weight':
+                        #         print(name, param.grad)
+                        # print("******************")
+
+
+                if self.step % self.save_interval == 0:
+                    self.save()
+
+                    # Run for a finite amount of time in integration tests.
+                    if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
+                        return
+                self.step += 1
+            if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
+                break
+        # Save the last checkpoint if it wasn't already saved.
+        if (self.step - 1) % self.save_interval != 0:
+            self.save()
+
+    def run_step(self, batch, cond, normal_batch, normal_cond, t2m_batch=None, t2m_cond=None):
+        self.forward_backward(batch, cond, normal_batch, normal_cond, t2m_batch, t2m_cond)
+        self.mp_trainer.optimize(self.opt)
+        self._anneal_lr()
+        self.log_step()
+
+    
+    def calculate_bone(self, motion):
+        ### motion is normalized motion B J 1 T
+        joint_num = 22 if self.args.dataset == 'humanml' else 23
+        denorm_motion = self.t2m_data.dataset.t2m_dataset.inv_transform_tensor(motion.permute(0, 2, 3, 1))
+        # B 1 T J
+        vel = denorm_motion[..., :4]  
+        ric_data = denorm_motion[..., 4 : 4 + (joint_num - 1) * 3] 
+        ric_data = ric_data.reshape(ric_data.shape[:-1] + ((joint_num - 1), 3)) # x,z are relative to root joint, all face z+
+        root_ric = torch.zeros_like(ric_data[..., 0:1, :]).to(ric_data.device)
+        root_ric[...,0, 1] = vel[..., 3] 
+        ric_data = torch.cat((root_ric, ric_data), dim=-2)
+
+        chains = paramUtil.t2m_kinematic_chain
+        bones = []
+        for chain in chains:
+            for i in range(1, len(chain)):
+                bones.append((ric_data[..., chain[i], :] - ric_data[..., chain[i-1], :]).unsqueeze(-2))
+        bones = torch.cat(bones, -2)
+        return bones              # B 1 T J-1 3
+
+    def forward_backward(self, batch, cond, normal_batch, normal_cond, t2m_batch=None, t2m_cond=None):
+        self.mp_trainer.zero_grad()
+        for i in range(0, batch.shape[0], self.microbatch):
+            # Eliminates the microbatch feature
+            assert i == 0
+            assert self.microbatch == self.batch_size
+            micro = batch
+            micro_cond = cond
+            micro_normal = normal_batch
+            micro_normal_cond = normal_cond
+            micro_t2m = t2m_batch
+            micro_cond_t2m = t2m_cond
+            # last_batch = (i + self.microbatch) >= batch.shape[0]
+            
+            assert self.diffusion is not None
+
+            last_batch = (i + self.microbatch) >= batch.shape[0]
+            t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
+            
+            compute_losses = functools.partial(
+                self.diffusion.training_losses,
+                self.model,
+                micro_t2m,
+                t,
+                model_kwargs = micro_cond_t2m,
+                batch_normal = micro_normal,
+                normal_kwargs = micro_normal_cond,
+                batch_style = micro,
+                style_kwargs = micro_cond,
+            )
+
+            if last_batch or not self.use_ddp:
+                losses = compute_losses()
+            else:
+                with self.model.no_sync():
+                    losses = compute_losses()
+
+            if isinstance(self.schedule_sampler, LossAwareSampler):
+                self.schedule_sampler.update_with_local_losses(
+                    t, losses["loss"].detach()
+                )
+
+            loss = (losses["loss"] * weights).mean()
+            
+            log_loss_dict(
+                self.diffusion, t, {k: v * weights for k, v in losses.items()}
+                )
+
+            self.mp_trainer.backward(loss)
+            # for name, param in self.model.named_parameters():
+            #     if param.requires_grad:
+            #         print(name, param.grad)
+            # print("******************")
+
+    def _anneal_lr(self):
+        if not self.lr_anneal_steps:
+            return
+        frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
+        lr = self.lr * (1 - frac_done)
+        for param_group in self.opt.param_groups:
+            param_group["lr"] = lr
+
+    def log_step(self):
+        logger.logkv("step", self.step + self.resume_step)
+        logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
+
+    def ckpt_file_name(self):
+        return f"model{(self.step+self.resume_step):09d}.pt"
+
+    def save(self):
+        def save_checkpoint(params):
+            state_dict = self.mp_trainer.master_params_to_state_dict(params)
+
+            # Do not save CLIP weights
+            clip_weights = [e for e in state_dict.keys() if e.startswith('motion_enc.')]
+            # mdm_weights = [e for e in state_dict.keys() if e.startswith('mdm_model.')]
+            for e in clip_weights:
+                del state_dict[e]
+            
+            # for e in mdm_weights:
+            #     del state_dict[e]
+
+            logger.log(f"saving model...")
+            filename = self.ckpt_file_name()
+            with bf.BlobFile(bf.join(self.save_dir, filename), "wb") as f:
+                torch.save(state_dict, f)
+
+        save_checkpoint(self.mp_trainer.master_params)
+
+        with bf.BlobFile(
+            bf.join(self.save_dir, f"opt{(self.step+self.resume_step):09d}.pt"),
+            "wb",
+        ) as f:
+            torch.save(self.opt.state_dict(), f)
 
 
 def parse_resume_step_from_filename(filename):
