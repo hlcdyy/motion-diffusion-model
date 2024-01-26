@@ -90,6 +90,20 @@ def main():
 
     sdm.to(dist_util.dev())
     sdm.eval() # disable random masking
+    
+
+    cosine_sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+
+    style_embed1 = sdm.motion_enc.mdm_model.encode_text('a person stomps with their left foot actively.')
+    norm_embed1 = sdm.motion_enc.mdm_model.encode_text('a person stomps with their left foot.')
+    r1 = style_embed1 - norm_embed1
+    r1 = r1/torch.norm(r1)
+
+    style_embed2 = sdm.motion_enc.mdm_model.encode_text('a person walks actively.')
+    norm_embed2 = sdm.motion_enc.mdm_model.encode_text('a person walks.')
+    r2 = style_embed2 - norm_embed2
+    r2 = r2 / torch.norm(r2)
+    print((1-cosine_sim(r1, r2)).mean())
 
     if is_using_data:
         iterator = iter(data)

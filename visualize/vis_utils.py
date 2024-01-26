@@ -4,6 +4,8 @@ from trimesh import Trimesh
 import os
 import torch
 from visualize.simplify_loc2rot import joints2smpl
+from data_loaders.humanml.common.rotation import cont6d2q, wrap
+from data_loaders.humanml.common.bvh_utils import Anim,save_bvh, Butterworth
 
 class npy2obj:
     def __init__(self, npy_path, sample_idx, rep_idx, device=0, cuda=True):
@@ -64,3 +66,53 @@ class npy2obj:
             'length': self.real_num_frames,
         }
         np.save(save_path, data_dict)
+
+def joints2rotation(joints, num_smplify_iters=150):
+    frames, njoints, nfeats = joints.shape
+    MINS = joints.min(axis=0).min(axis=0)
+
+    height_offset = MINS[1]
+    joints[:, :, 1] -= height_offset
+    
+    j2s = joints2smpl(num_frames=frames, device_id=0, cuda=True, num_smplify_iters=num_smplify_iters)
+    motion_tensor, opt_dict = j2s.joint2smpl(joints)  # [nframes, njoints, 3]
+    
+    return motion_tensor
+
+def joints2bvh(path, joints, real_offset, kinematic_chain, names=None, num_smplify_iters=150, Butterworth_all=False):
+
+    motion_tensor = joints2rotation(joints, num_smplify_iters) # [1, 25, 6, seq]
+    motion_tensor = motion_tensor.squeeze(0).permute(2, 0, 1) # Seq J 6
+
+    # head = 15
+    # neck = 12
+    joint_indices = [12, 15]
+
+    if Butterworth_all:
+        joint_indices = range(0, motion_tensor.shape[1])
+    motion_tensor = motion_tensor.detach().cpu().numpy()
+
+    for joint in joint_indices:
+        for j in range(motion_tensor.shape[-1]):
+            motion_tensor[..., joint, j] = Butterworth(motion_tensor[..., joint, j], 1/20, 1.8)
+
+    new_quats = wrap(cont6d2q, motion_tensor[:, :22, :]) # Seq J 4
+
+    real_offset = real_offset.copy()
+
+    parents = [-1] * real_offset.shape[0]  
+
+    for idx, chain in enumerate(kinematic_chain):
+        for index, i in enumerate(chain[1:]):
+            parents[i] = chain[index]       
+    
+    real_offset[0, :] = np.zeros((1, 3), np.float32)
+    
+    new_pos = real_offset[None, ...].repeat(new_quats.shape[0], axis=0)
+    new_pos[:, 0, :] = motion_tensor[:, -1, :3]
+    # offset, pos, quats, parents, names
+    anim = Anim(new_quats, new_pos, real_offset, parents, names)
+
+    save_bvh(path, anim, 1/20)
+
+    

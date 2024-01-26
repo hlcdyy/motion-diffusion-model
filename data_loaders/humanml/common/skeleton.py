@@ -196,6 +196,53 @@ class Skeleton(object):
                 # print(matR.shape, offset_vec.shape)
                 joints[:, chain[i]] = torch.matmul(matR, offset_vec).squeeze(-1) + joints[:, chain[i-1]]
         return joints
+    
+    def forward_kinematics_real_cont6d(self, cont6d_params, root_pos, r_rot_quat, tgt_offsets):
+        # cont6d_params (batch_size,seq, joints_num, 6)
+        # root_pos (batch_size, seq, 3)
+        # r_rot_quat (batch_size, seq, 4)
+        
+        cont6d_params = cont6d_params.clone()
+        matrix = cont6d_to_matrix(cont6d_params) # B S J 3 3
+        y_matrix = quaternion_to_matrix(r_rot_quat[..., None, :]) # B S 1 3 3
+        tmp = torch.matmul(y_matrix[..., 0:1, :, :], matrix[..., 0:1, :, :])
+        matrix = torch.cat((tmp, matrix[..., 1:, :, :]), -3)
+        # lpos = tgt_offsets.clone()[None].expand(cont6d_params.shape[0], -1, -1)
+        lpos = cont6d_params[..., :3].data.zero_()
+        lpos[..., :, :] = tgt_offsets.clone()
+        lpos[..., 0, :] = root_pos
+        gp, gr = [lpos[..., :1, :]], [matrix[..., :1, :, :]]
+        # parents = parents.int()
+        for i in range(1, len(self._parents)):
+            # B S 1 3 3, B S 1 3
+            gp.append(torch.matmul(gr[self._parents[i]].squeeze(-3), lpos[..., i:i+1, :].transpose(-1, -2)).transpose(-1, -2) + gp[self._parents[i]])
+            gr.append(torch.matmul(gr[self._parents[i]], matrix[..., i:i+1, :, :]))
+        
+        res = torch.cat(gr, dim=-3), torch.cat(gp, dim=-2)
+        return res[1]
+    
+    def forward_kinematics_real_cont6d_np(self, cont6d_params, root_pos, r_rot_quat, tgt_offsets):
+        # cont6d_params (batch_size, seq, joints_num, 6)
+        # root_pos (batch_size, seq, 3)
+        # r_rot_quat (batch_size, seq, 4)
+        
+        cont6d_params = cont6d_params.copy()
+        matrix = cont6d_to_matrix_np(cont6d_params) # B S J 3 3
+        y_matrix = quaternion_to_matrix_np(r_rot_quat[..., None, :]) # B S 1 3 3
+        matrix[..., 0, :, :] = np.dot(y_matrix[..., 0, :, :], matrix[..., 0, :, :])
+        # lpos = tgt_offsets.copy()[None].repeat(cont6d_params.shape[0], axis=0)
+        lpos = np.zeros_like(cont6d_params)[..., :3]
+        lpos[..., :, :] = tgt_offsets 
+        lpos[..., 0, :] = root_pos
+        gp, gr = [lpos[..., :1, :]], [matrix[..., :1, :, :]]
+        # parents = parents.int()
+        for i in range(1, len(self._parents)):
+            gp.append(np.dot(gr[self._parents[i]].squeeze(-3), lpos[..., i:i+1, :].swapaxes(-1, -2)).swapaxes(-1, -2) + gp[self._parents[i]])
+            gr.append(np.dot(gr[self._parents[i]], matrix[..., i:i+1, :, :]))
+
+        res = np.concatenate(gr, axis=-3), np.concatenate(gp, axis=-2)
+        return res[1]
+
 
 
 

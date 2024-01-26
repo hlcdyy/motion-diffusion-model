@@ -4,6 +4,9 @@ Train a diffusion model on images.
 """
 
 import os
+
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import json
 from utils.fixseed import fixseed
 from utils.parser_util import train_args
@@ -33,10 +36,21 @@ def main():
     dist_util.setup_dist(args.device)
 
     print("creating data loader...")
-    data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
+    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot"]:
+        # split = 'all'
+        split = 'train'
+    else:
+        split = 'train'
+    data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split=split)
 
     print("creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(args, data)
+    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot"]:
+        from utils.model_util import creat_stylediffuse_and_diffusion
+        from diffusion.respace import SpacedDiffusion
+        from model.mdm_forstyledataset import MDM as MDM1
+        model, diffusion = creat_stylediffuse_and_diffusion(args, ModelClass=MDM1, DiffusionClass=SpacedDiffusion, timestep_respacing = '')
+    else:
+        model, diffusion = create_model_and_diffusion(args, data)
     model.to(dist_util.dev())
     model.rot2xyz.smpl_model.eval()
 

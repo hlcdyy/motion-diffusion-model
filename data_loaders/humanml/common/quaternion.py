@@ -51,26 +51,39 @@ def qmul(q, r):
     return torch.stack((w, x, y, z), dim=1).view(original_shape)
 
 
-def qrot(q, v):
-    """
-    Rotate vector(s) v about the rotation described by quaternion(s) q.
-    Expects a tensor of shape (*, 4) for q and a tensor of shape (*, 3) for v,
-    where * denotes any number of dimensions.
-    Returns a tensor of shape (*, 3).
-    """
+# def qrot(q, v):
+#     """
+#     Rotate vector(s) v about the rotation described by quaternion(s) q.
+#     Expects a tensor of shape (*, 4) for q and a tensor of shape (*, 3) for v,
+#     where * denotes any number of dimensions.
+#     Returns a tensor of shape (*, 3).
+#     """
+#     assert q.shape[-1] == 4
+#     assert v.shape[-1] == 3
+#     assert q.shape[:-1] == v.shape[:-1]
+
+#     original_shape = list(v.shape)
+#     # print(q.shape)
+#     q = q.contiguous().view(-1, 4)
+#     v = v.contiguous().view(-1, 3)
+
+#     qvec = q[:, 1:]
+#     uv = torch.cross(qvec, v, dim=1)
+#     uuv = torch.cross(qvec, uv, dim=1)
+#     return (v + 2 * (q[:, :1] * uv + uuv)).view(original_shape)
+
+def qrot(q, vec):
     assert q.shape[-1] == 4
-    assert v.shape[-1] == 3
-    assert q.shape[:-1] == v.shape[:-1]
+    assert vec.shape[-1] == 3
 
-    original_shape = list(v.shape)
-    # print(q.shape)
-    q = q.contiguous().view(-1, 4)
-    v = v.contiguous().view(-1, 3)
-
-    qvec = q[:, 1:]
-    uv = torch.cross(qvec, v, dim=1)
-    uuv = torch.cross(qvec, uv, dim=1)
-    return (v + 2 * (q[:, :1] * uv + uuv)).view(original_shape)
+    s = q[..., :1]
+    u = q[..., 1:]
+    u, vec = torch.broadcast_tensors(u, vec)
+    u = u.float()
+    vec = vec.float()
+    uv = torch.cross(u, vec, dim=len(q.shape)-1)
+    uuv = torch.cross(u, uv, dim=len(q.shape)-1)
+    return (vec+2*(s*uv+uuv)).float()
 
 
 def qeuler(q, order, epsilon=0, deg=True):
@@ -280,6 +293,7 @@ def quaternion_to_matrix(quaternions):
     Returns:
         Rotation matrices as tensor of shape (..., 3, 3).
     """
+    quaternions = qnormalize(quaternions)
     r, i, j, k = torch.unbind(quaternions, -1)
     two_s = 2.0 / (quaternions * quaternions).sum(-1)
 
@@ -342,28 +356,35 @@ def cont6d_to_matrix_np(cont6d):
 
 
 def qpow(q0, t, dtype=torch.float):
-    ''' q0 : tensor of quaternions
+    ''' q0 : tensor of quaternions  B * 4
     t: tensor of powers
     '''
+    raw_shape = q0.shape
+    q0 = q0.view(-1, 4)
+
     q0 = qnormalize(q0)
     theta0 = torch.acos(q0[..., 0])
 
     ## if theta0 is close to zero, add epsilon to avoid NaNs
     mask = (theta0 <= 10e-10) * (theta0 >= -10e-10)
+    # revised by HL 23_8_23, convert bool to float 
+    mask = mask.float()
     theta0 = (1 - mask) * theta0 + mask * 10e-10
     v0 = q0[..., 1:] / torch.sin(theta0).view(-1, 1)
 
     if isinstance(t, torch.Tensor):
-        q = torch.zeros(t.shape + q0.shape)
+        q = torch.zeros(t.shape + q0.shape).to(q0.device)
         theta = t.view(-1, 1) * theta0.view(1, -1)
     else:  ## if t is a number
-        q = torch.zeros(q0.shape)
+        q = torch.zeros(q0.shape).to(q0.device)
         theta = t * theta0
 
     q[..., 0] = torch.cos(theta)
     q[..., 1:] = v0 * torch.sin(theta).unsqueeze(-1)
 
-    return q.to(dtype)
+    return q.to(dtype).view(t.shape + raw_shape)
+
+
 
 
 def qslerp(q0, q1, t):

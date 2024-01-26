@@ -42,6 +42,10 @@ def collate(batch):
         textbatch = [b['tokens'] for b in notnone_batches]
         cond['y'].update({'tokens': textbatch})
 
+    if 'file_name' in notnone_batches[0]:
+        file_name = [b['file_name'] for b in notnone_batches]
+        cond['y'].update({'file_name':file_name})
+
     if 'action' in notnone_batches[0]:
         actionbatch = [b['action'] for b in notnone_batches]
         cond['y'].update({'action': torch.as_tensor(actionbatch).unsqueeze(1)})
@@ -78,6 +82,7 @@ def t2m_collate(batch):
         'text': b[2], #b[0]['caption'] 
         'tokens': b[6],  # row_token not word embeddings
         'lengths': b[5],  # motion length
+        'file_name':b[7],
     } for b in batch]
     return collate(adapted_batch)
 

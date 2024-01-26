@@ -4,6 +4,9 @@ Train a diffusion model on images.
 """
 
 import os
+
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import json
 from utils.fixseed import fixseed
 from utils.parser_util import train_motion_encoder_args
@@ -33,7 +36,10 @@ def main():
     dist_util.setup_dist(args.device)
 
     print("creating data loader...")
-    data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
+    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot"]:
+        data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split="train")
+    else:
+        data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames)
 
     print("creating model...")
     model = create_motion_encoder(args, data)

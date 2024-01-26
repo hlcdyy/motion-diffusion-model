@@ -356,6 +356,7 @@ class MotionEncoder(nn.Module):
                  ablation, activation, legacy, data_rep, dataset, clip_dim,
                  arch, emb_trans_dec, clip_version, **kargs)
         # missing_keys, unexpected_keys = mdm_model.load_state_dict(torch.load(kargs["mdm_path"]), strict=False)
+        print("load mdm_model from checkpoint {}".format(kargs["mdm_path"]))
         self.load_model_wo_clip(mdm_model, torch.load(kargs["mdm_path"]))
         # mdm_model.eval()  # We also train the mdm when finetuning
 
@@ -372,7 +373,7 @@ class MotionEncoder(nn.Module):
             default_context_length = 77
             context_length = max_text_len + 2 # start_token + 20 + end_token
             assert context_length < default_context_length
-            texts = clip.tokenize(raw_text, context_length=context_length, truncate=True).to(device) # [bs, context_length] # if n_tokens > context_length -> will truncate
+            texts = clip.tokenize(raw_text, context_length=context_length, truncate=True).to(device) # [bs, context_length] # if n_tokens > context_length -> will truncate            
             # print('texts', texts.shape)
             zero_pad = torch.zeros([texts.shape[0], default_context_length-context_length], dtype=texts.dtype, device=texts.device)
             texts = torch.cat([texts, zero_pad], dim=1)
@@ -394,7 +395,7 @@ class MotionEncoder(nn.Module):
             mask = y.get("mask").squeeze(1).squeeze(1).bool()
             if y.get('text', None) is not None:
                 raw_text = y['text']
-                enc_text = self.encode_text(raw_text)        
+                enc_text = self.encode_text(raw_text) 
             else:
                 enc_text = None
         else:
@@ -472,6 +473,79 @@ class MotionEncoder(nn.Module):
         output = self.mdm_model.output_process(output)  # [bs, njoints, nfeats, nframes]
     
         return output
+    
+
+class MotionTrajectory(nn.Module):
+    def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
+                 ablation=None, activation="gelu", legacy=False, data_rep='rot6d', dataset='amass', clip_dim=512,
+                 arch='trans_enc', emb_trans_dec=False, clip_version=None, **kargs):
+    
+        super().__init__()
+        
+        self.modeltype = modeltype
+        self.njoints = njoints
+        self.nfeats = nfeats
+        self.num_actions = num_actions
+        
+        self.pose_rep = pose_rep
+        self.glob = glob
+        self.glob_rot = glob_rot
+        self.translation = translation
+        self.data_rep = data_rep
+        
+        self.latent_dim = latent_dim
+        
+        self.ff_size = ff_size
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.dropout = dropout
+
+        self.ablation = ablation
+        self.activation = activation
+        
+        self.input_feats = 21 * 3 if dataset == "humanml" else 20 * 3
+
+        self.input_process = InputProcess(self.data_rep, self.input_feats, self.latent_dim)
+
+        self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
+
+        seqTransEncoderLayer = nn.TransformerEncoderLayer(d_model=self.latent_dim,
+                                                          nhead=self.num_heads,
+                                                          dim_feedforward=self.ff_size,
+                                                          dropout=self.dropout,
+                                                          activation=self.activation)
+        self.seqTransEncoder = nn.TransformerEncoder(seqTransEncoderLayer,
+                                                     num_layers=self.num_layers//2)
+        
+        self.output_process = OutputProcess(self.data_rep, 4, self.latent_dim, 4,
+                                            self.nfeats)
+        
+    
+    
+    def forward(self, x, y=None):
+        """
+        x: [batch_size, njoints, nfeats, max_frames], motion shape
+        """
+        x = x[:, 4:4+self.input_feats, ...]
+        bs, njoints, nfeats, nframes = x.shape
+        
+        x = self.input_process(x) 
+        # x = self.mdm_model.input_process(x) #[seqlen, bs, d]
+        
+        if y is not None:
+            mask = y.get("mask").squeeze(1).squeeze(1).bool()
+        else:
+            mask = torch.ones((bs, nframes), dtype=bool, device=x.device)
+    
+        # add positional encoding
+        xseq = self.sequence_pos_encoder(x)        
+
+        final = self.seqTransEncoder(xseq, src_key_padding_mask=~mask) # seq bs d
+       
+        output = self.output_process(final)
+
+        return output 
     
 
 class MDM(nn.Module):
@@ -815,6 +889,7 @@ class InputProcess(nn.Module):
         self.poseEmbedding = nn.Linear(self.input_feats, self.latent_dim)
         if self.data_rep == 'rot_vel':
             self.velEmbedding = nn.Linear(self.input_feats, self.latent_dim)
+        
 
     def forward(self, x):
         bs, njoints, nfeats, nframes = x.shape
@@ -1140,6 +1215,7 @@ class DiffuseTrasnfer(nn.Module):
 
     def load_motion_enc_model(self):
         self.load_model(self.motion_enc, torch.load(self.kargs["motion_enc_path"]))
+        print("load motion_enc from checkpoint {}".format(self.kargs["motion_enc_path"]))
         self.motion_enc = self.motion_enc.eval()  
 
         for p in self.motion_enc.parameters():
@@ -1195,7 +1271,435 @@ class DiffuseTrasnfer(nn.Module):
         
         output = self.motion_enc.mdm_model.output_process(output)
         return output
+
+
+class ControlMDM(nn.Module):
+    def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
+                 ablation=None, activation="gelu", legacy=False, data_rep='rot6d', dataset='amass', clip_dim=512,
+                 arch='trans_enc', emb_trans_dec=False, clip_version=None, **kargs):
+        super().__init__()
         
+        self.legacy = legacy
+        self.modeltype = modeltype
+        self.njoints = njoints
+        self.nfeats = nfeats
+        self.num_actions = num_actions
+        self.data_rep = data_rep
+        self.dataset = dataset
+
+        self.pose_rep = pose_rep
+        self.glob = glob
+        self.glob_rot = glob_rot
+        self.translation = translation
+
+        self.latent_dim = latent_dim
+
+        self.ff_size = ff_size
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.dropout = dropout
+
+        self.ablation = ablation
+        self.activation = activation
+        self.clip_dim = clip_dim
+        self.action_emb = kargs.get('action_emb', None)
+        self.kargs = kargs
+
+        self.input_feats = self.njoints * self.nfeats
+
+        self.normalize_output = kargs.get('normalize_encoder_output', False)
+
+        self.cond_mode = kargs.get('cond_mode', 'no_cond')
+        self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
+        self.arch = arch
+        self.gru_emb_dim = self.latent_dim if self.arch == 'gru' else 0
+        self.emb_trans_dec = emb_trans_dec
+        
+        if self.arch == 'trans_enc':
+            print("TRANS_ENC init")
+            seqTransEncoderLayer = nn.TransformerEncoderLayer(d_model=self.latent_dim,
+                                                              nhead=self.num_heads,
+                                                              dim_feedforward=self.ff_size,
+                                                              dropout=self.dropout,
+                                                              activation=self.activation)
+
+            self.seqTransEncoder = nn.TransformerEncoder(seqTransEncoderLayer,
+                                                         num_layers=self.num_layers)
+        elif self.arch == 'trans_dec':
+            print("TRANS_DEC init")
+            seqTransDecoderLayer = nn.TransformerDecoderLayer(d_model=self.latent_dim,
+                                                              nhead=self.num_heads,
+                                                              dim_feedforward=self.ff_size,
+                                                              dropout=self.dropout,
+                                                              activation=activation)
+            self.seqTransDecoder = nn.TransformerDecoder(seqTransDecoderLayer,
+                                                         num_layers=self.num_layers)
+        elif self.arch == 'gru':
+            print("GRU init")
+            self.gru = nn.GRU(self.latent_dim, self.latent_dim, num_layers=self.num_layers, batch_first=True)
+        else:
+            raise ValueError('Please choose correct architecture [trans_enc, trans_dec, gru]')
+
+        self.motion_enc = MotionEncoder(modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim, ff_size, num_layers, num_heads, dropout,
+                 ablation, activation, legacy, data_rep, dataset, clip_dim,
+                 arch, emb_trans_dec, clip_version, **kargs)
+        
+        self.load_motion_enc_model()
+
+    def load_motion_enc_model(self):
+        self.load_model(self.motion_enc, torch.load(self.kargs["motion_enc_path"]))
+        self.motion_enc = self.motion_enc.eval()  
+
+        for p in self.motion_enc.parameters():
+            p.requires_grad = False
+
+        assert all([not para.requires_grad for para in self.motion_enc.mdm_model.parameters()])
+
+    def load_model(self, model, state_dict):
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        # print([k for k in missing_keys if not k.startswith('clip_model.')])
+        # assert len(unexpected_keys) == 0
+        assert all([k.startswith('input_process.') for k in unexpected_keys])
+        # assert all([k.startswith('clip_model.') for k in missing_keys])
+        assert all([k.startswith('clip_model.') or 
+                    k.startswith('mdm_model.') for k in missing_keys])
+        
+
+
+    def parameters_wo_enc(self):
+        return [p for name, p in self.named_parameters() if not name.startswith('motion_enc.')]
+
+
+    def mask_cond(self, cond, force_mask=False):
+        bs, d = cond.shape
+        if force_mask:
+            return torch.zeros_like(cond)
+        elif self.training and self.cond_mask_prob > 0.:
+            mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_mask_prob).view(bs, 1)  # 1-> use null_cond, 0-> use real cond
+            return cond * (1. - mask)
+        else:
+            return cond
+        
+    def forward(self, x, timesteps, y=None):
+    
+        """
+        x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
+        timesteps: [batch_size] (int)
+        """
+        bs, njoints, nfeats, nframes = x.shape
+        emb = self.motion_enc.mdm_model.embed_timestep(timesteps)  # [1, bs, d]
+        
+        force_mask = y.get('uncond', False)
+        x_mu = self.motion_enc.mdm_model.encode_text(y['text'])
+        
+        # input_mu = x_mu # for debug
+        emb += self.motion_enc.mdm_model.embed_text(self.mask_cond(x_mu, force_mask=force_mask))
+
+        x = self.motion_enc.mdm_model.input_process(x)
+
+        if self.arch == 'trans_enc':
+            xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
+            xseq = self.motion_enc.mdm_model.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
+            output = self.seqTransEncoder(xseq)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+        
+        output = self.motion_enc.mdm_model.output_process(output)
+        return output
+
+
+# class ControlMDMScratch(nn.Module):
+#     def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+#                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
+#                  ablation=None, activation="gelu", legacy=False, data_rep='rot6d', dataset='amass', clip_dim=512,
+#                  arch='trans_enc', emb_trans_dec=False, clip_version=None, **kargs):
+#         super().__init__()
+        
+#         self.legacy = legacy
+#         self.modeltype = modeltype
+#         self.njoints = njoints
+#         self.nfeats = nfeats
+#         self.num_actions = num_actions
+#         self.data_rep = data_rep
+#         self.dataset = dataset
+
+#         self.pose_rep = pose_rep
+#         self.glob = glob
+#         self.glob_rot = glob_rot
+#         self.translation = translation
+
+#         self.latent_dim = latent_dim
+
+#         self.ff_size = ff_size
+#         self.num_layers = num_layers
+#         self.num_heads = num_heads
+#         self.dropout = dropout
+
+#         self.ablation = ablation
+#         self.activation = activation
+#         self.clip_dim = clip_dim
+#         self.action_emb = kargs.get('action_emb', None)
+#         self.kargs = kargs
+
+#         self.input_feats = self.njoints * self.nfeats
+
+#         self.normalize_output = kargs.get('normalize_encoder_output', False)
+
+#         self.cond_mode = kargs.get('cond_mode', 'no_cond')
+#         self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
+#         self.arch = arch
+#         self.gru_emb_dim = self.latent_dim if self.arch == 'gru' else 0
+#         self.emb_trans_dec = emb_trans_dec
+
+#         self.input_process = InputProcess(self.data_rep, self.input_feats+self.gru_emb_dim, self.latent_dim)
+
+#         self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
+
+#         if self.arch == 'trans_enc':
+#             print("TRANS_ENC init")
+#             seqTransEncoderLayer = nn.TransformerEncoderLayer(d_model=self.latent_dim,
+#                                                               nhead=self.num_heads,
+#                                                               dim_feedforward=self.ff_size,
+#                                                               dropout=self.dropout,
+#                                                               activation=self.activation)
+
+#             self.seqTransEncoder = nn.TransformerEncoder(seqTransEncoderLayer,
+#                                                          num_layers=self.num_layers)
+#         elif self.arch == 'trans_dec':
+#             print("TRANS_DEC init")
+#             seqTransDecoderLayer = nn.TransformerDecoderLayer(d_model=self.latent_dim,
+#                                                               nhead=self.num_heads,
+#                                                               dim_feedforward=self.ff_size,
+#                                                               dropout=self.dropout,
+#                                                               activation=activation)
+#             self.seqTransDecoder = nn.TransformerDecoder(seqTransDecoderLayer,
+#                                                          num_layers=self.num_layers)
+#         elif self.arch == 'gru':
+#             print("GRU init")
+#             self.gru = nn.GRU(self.latent_dim, self.latent_dim, num_layers=self.num_layers, batch_first=True)
+#         else:
+#             raise ValueError('Please choose correct architecture [trans_enc, trans_dec, gru]')
+
+#         self.embed_timestep = TimestepEmbedder(self.latent_dim, self.sequence_pos_encoder)
+
+#         if self.cond_mode != 'no_cond':
+#             if 'text' in self.cond_mode:
+#                 self.embed_text = nn.Linear(self.clip_dim, self.latent_dim)
+#                 print('EMBED TEXT')
+#                 print('Loading CLIP...')
+#                 self.clip_version = clip_version
+#                 self.clip_model = self.load_and_freeze_clip(clip_version)
+#             if 'action' in self.cond_mode:
+#                 self.embed_action = EmbedAction(self.num_actions, self.latent_dim)
+#                 print('EMBED ACTION')
+
+#         self.output_process = OutputProcess(self.data_rep, self.input_feats, self.latent_dim, self.njoints,
+#                                             self.nfeats)
+
+#         self.rot2xyz = Rotation2xyz(device='cpu', dataset=self.dataset)
+
+#     def parameters_wo_clip(self):
+#         return [p for name, p in self.named_parameters() if not name.startswith('clip_model.')]
+
+#     def load_and_freeze_clip(self, clip_version):
+#         clip_model, clip_preprocess = clip.load(clip_version, device='cpu',
+#                                                 jit=False)  # Must set jit=False for training
+#         clip.model.convert_weights(
+#             clip_model)  # Actually this line is unnecessary since clip by default already on float16
+
+#         # Freeze CLIP weights
+#         clip_model.eval()
+#         for p in clip_model.parameters():
+#             p.requires_grad = False
+
+#         return clip_model
+
+#     def encode_text(self, raw_text):
+#         # raw_text - list (batch_size length) of strings with input text prompts
+#         device = next(self.parameters()).device
+#         max_text_len = 20 if self.dataset in ['humanml', 'kit'] else None  # Specific hardcoding for humanml dataset
+#         if max_text_len is not None:
+#             default_context_length = 77
+#             context_length = max_text_len + 2 # start_token + 20 + end_token
+#             assert context_length < default_context_length
+#             texts = clip.tokenize(raw_text, context_length=context_length, truncate=True).to(device) # [bs, context_length] # if n_tokens > context_length -> will truncate
+#             # print('texts', texts.shape)
+#             zero_pad = torch.zeros([texts.shape[0], default_context_length-context_length], dtype=texts.dtype, device=texts.device)
+#             texts = torch.cat([texts, zero_pad], dim=1)
+#             # print('texts after pad', texts.shape, texts)
+#         else:
+#             texts = clip.tokenize(raw_text, truncate=True).to(device) # [bs, context_length] # if n_tokens > 77 -> will truncate
+#         return self.clip_model.encode_text(texts).float()
+
+
+#     def mask_cond(self, cond, force_mask=False):
+#         bs, d = cond.shape
+#         if force_mask:
+#             return torch.zeros_like(cond)
+#         elif self.training and self.cond_mask_prob > 0.:
+#             mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_mask_prob).view(bs, 1)  # 1-> use null_cond, 0-> use real cond
+#             return cond * (1. - mask)
+#         else:
+#             return cond
+        
+#     def forward(self, x, timesteps, y=None):
+    
+#         """
+#         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
+#         timesteps: [batch_size] (int)
+#         """
+#         bs, njoints, nfeats, nframes = x.shape
+#         emb = self.embed_timestep(timesteps)  # [1, bs, d]
+        
+#         force_mask = y.get('uncond', False)
+#         x_mu = self.encode_text(y['text'])
+        
+#         # input_mu = x_mu # for debug
+#         emb += self.embed_text(self.mask_cond(x_mu, force_mask=force_mask))
+
+#         x = self.input_process(x)
+
+#         if self.arch == 'trans_enc':
+#             xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
+#             xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
+#             output = self.seqTransEncoder(xseq)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+        
+#         output = self.output_process(output)
+#         return output
+
+
+class StyleDiffusion(nn.Module):
+    def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
+                 ablation=None, activation="gelu", legacy=False, data_rep='rot6d', dataset='amass', clip_dim=512,
+                 arch='trans_enc', emb_trans_dec=False, clip_version=None, **kargs):
+        super().__init__()
+        
+        self.legacy = legacy
+        self.modeltype = modeltype
+        self.njoints = njoints
+        self.nfeats = nfeats
+        self.num_actions = num_actions
+        self.data_rep = data_rep
+        self.dataset = dataset
+
+        self.pose_rep = pose_rep
+        self.glob = glob
+        self.glob_rot = glob_rot
+        self.translation = translation
+
+        self.latent_dim = latent_dim
+
+        self.ff_size = ff_size
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.dropout = dropout
+
+        self.ablation = ablation
+        self.activation = activation
+        self.clip_dim = clip_dim
+        self.action_emb = kargs.get('action_emb', None)
+        self.kargs = kargs
+
+        self.input_feats = self.njoints * self.nfeats
+
+        self.normalize_output = kargs.get('normalize_encoder_output', False)
+
+        self.cond_mode = kargs.get('cond_mode', 'no_cond')
+        self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
+        self.arch = arch
+        self.gru_emb_dim = self.latent_dim if self.arch == 'gru' else 0
+        self.emb_trans_dec = emb_trans_dec
+        
+        if self.arch == 'trans_enc':
+            print("TRANS_ENC init")
+            seqTransEncoderLayer = nn.TransformerEncoderLayer(d_model=self.latent_dim,
+                                                              nhead=self.num_heads,
+                                                              dim_feedforward=self.ff_size,
+                                                              dropout=self.dropout,
+                                                              activation=self.activation)
+
+            self.seqTransEncoder = nn.TransformerEncoder(seqTransEncoderLayer,
+                                                         num_layers=self.num_layers)
+        elif self.arch == 'trans_dec':
+            print("TRANS_DEC init")
+            seqTransDecoderLayer = nn.TransformerDecoderLayer(d_model=self.latent_dim,
+                                                              nhead=self.num_heads,
+                                                              dim_feedforward=self.ff_size,
+                                                              dropout=self.dropout,
+                                                              activation=activation)
+            self.seqTransDecoder = nn.TransformerDecoder(seqTransDecoderLayer,
+                                                         num_layers=self.num_layers)
+        elif self.arch == 'gru':
+            print("GRU init")
+            self.gru = nn.GRU(self.latent_dim, self.latent_dim, num_layers=self.num_layers, batch_first=True)
+        else:
+            raise ValueError('Please choose correct architecture [trans_enc, trans_dec, gru]')
+
+        self.controlmdm = ControlMDM(modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
+                 latent_dim, ff_size, num_layers, num_heads, dropout,
+                 ablation, activation, legacy, data_rep, dataset, clip_dim,
+                 arch, emb_trans_dec, clip_version, **kargs)
+        
+        self.load_inpainting_net()
+
+    def load_inpainting_net(self):
+        print("load ControlMDM from checkpoint {}".format(self.kargs["inpainting_model_path"]))
+        self.load_model(self.controlmdm, torch.load(self.kargs["inpainting_model_path"]))
+        self.controlmdm = self.controlmdm.eval()  
+
+        for p in self.controlmdm.parameters():
+            p.requires_grad = False
+
+        assert all([not para.requires_grad for para in self.controlmdm.parameters()])
+
+    def load_model(self, model, state_dict):
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        # print([k for k in missing_keys if not k.startswith('clip_model.')])
+        assert len(unexpected_keys) == 0
+        # assert all([k.startswith('input_process.') for k in unexpected_keys])
+        # assert all([k.startswith('clip_model.') for k in missing_keys])
+        assert all([k.startswith('motion_enc.') for k in missing_keys])
+        
+
+    def parameters_wo_enc(self):
+        return [p for name, p in self.named_parameters() if not name.startswith('controlmdm.')]
+
+
+    def mask_cond(self, cond, force_mask=False):
+        bs, d = cond.shape
+        if force_mask:
+            return torch.zeros_like(cond)
+        elif self.training and self.cond_mask_prob > 0.:
+            mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_mask_prob).view(bs, 1)  # 1-> use null_cond, 0-> use real cond
+            return cond * (1. - mask)
+        else:
+            return cond
+        
+    def forward(self, x, timesteps, y=None):
+    
+        """
+        x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
+        timesteps: [batch_size] (int)
+        """
+        bs, njoints, nfeats, nframes = x.shape
+        emb = self.controlmdm.motion_enc.mdm_model.embed_timestep(timesteps)  # [1, bs, d]
+        
+        force_mask = y.get('uncond', False)
+        x_mu = self.controlmdm.motion_enc.mdm_model.encode_text(y['text'])
+        
+        # input_mu = x_mu # for debug
+        emb += self.controlmdm.motion_enc.mdm_model.embed_text(self.mask_cond(x_mu, force_mask=force_mask))
+
+        x = self.controlmdm.motion_enc.mdm_model.input_process(x)
+
+        if self.arch == 'trans_enc':
+            xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
+            xseq = self.controlmdm.motion_enc.mdm_model.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
+            output = self.seqTransEncoder(xseq)[1:]  # , src_key_padding_mask=~maskseq)  # [seqlen, bs, d]
+        
+        output = self.controlmdm.motion_enc.mdm_model.output_process(output)
+        return output
         
 
 if __name__ == "__main__":

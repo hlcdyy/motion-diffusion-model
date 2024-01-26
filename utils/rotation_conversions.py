@@ -526,12 +526,30 @@ def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
     Retrieved from http://arxiv.org/abs/1812.07035
     """
 
-    a1, a2 = d6[..., :3], d6[..., 3:]
-    b1 = F.normalize(a1, dim=-1)
-    b2 = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
-    b2 = F.normalize(b2, dim=-1)
-    b3 = torch.cross(b1, b2, dim=-1)
-    return torch.stack((b1, b2, b3), dim=-2)
+    # a1, a2 = d6[..., :3], d6[..., 3:]
+    # b1 = F.normalize(a1, dim=-1)
+    # b2 = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
+    # b2 = F.normalize(b2, dim=-1)
+    # b3 = torch.cross(b1, b2, dim=-1)
+    # return torch.stack((b1, b2, b3), dim=-2)
+
+    assert d6.shape[-1] == 6, "The last dimension must be 6"
+    x_raw = d6[..., 0:3]
+    y_raw = d6[..., 3:6]
+
+    x = x_raw / torch.norm(x_raw, dim=-1, keepdim=True)
+    z = torch.cross(x, y_raw, dim=-1)
+    z = z / torch.norm(z, dim=-1, keepdim=True)
+
+    y = torch.cross(z, x, dim=-1)
+
+    x = x[..., None]
+    y = y[..., None]
+    z = z[..., None]
+
+    mat = torch.cat([x, y, z], dim=-1)
+    return mat
+
 
 
 def matrix_to_rotation_6d(matrix: torch.Tensor) -> torch.Tensor:
@@ -549,4 +567,9 @@ def matrix_to_rotation_6d(matrix: torch.Tensor) -> torch.Tensor:
     IEEE Conference on Computer Vision and Pattern Recognition, 2019.
     Retrieved from http://arxiv.org/abs/1812.07035
     """
-    return matrix[..., :2, :].clone().reshape(*matrix.size()[:-2], 6)
+    # return matrix[..., :2, :].clone().reshape(*matrix.size()[:-2], 6)
+    # revised by hl
+    cont_6d = torch.cat([matrix[..., 0], matrix[..., 1]], dim=-1)
+    return cont_6d
+
+    

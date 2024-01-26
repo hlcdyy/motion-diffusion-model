@@ -345,76 +345,92 @@ class BandaiDataset(data.Dataset):
         self.max_length = 20
         self.pointer = 0
         self.max_motion_length = opt.max_motion_length
-        min_motion_len = 40 if self.opt.dataset_name in['bandai-1', 'bandai-2'] else 24
-        
+        min_motion_len = 40 if self.opt.dataset_name in['bandai-1', 'bandai-2'] else 24     
         data_dict = {}
         
-        if self.opt.dataset_name == 'bandai-1':
-            from dataset.bandai1_split import train_list, test_list
+        if self.opt.dataset_name in ['bandai-1', 'bandai-1_posrot']:
+            from dataset.bandai1_split import test_list
             if split == 'eval':
                 split = 'test'
-            contents = eval(split+'_list')
-
-        if self.opt.dataset_name == 'bandai-2':
-            from dataset.bandai2_split import train_list, test_list
-            if split == 'eval':
-                split = 'test'
-            contents = eval(split+'_list')
             
-        
+        if self.opt.dataset_name in ['bandai-2', 'bandai-2_posrot']:
+            # from dataset.bandai2_split import train_list, test_list
+            from dataset.bandai2_split import test_list
+            if split == 'eval':
+                split = 'test'
+            
         new_name_list = []
         length_list = []
     
         files = os.listdir(opt.motion_dir)
+
+        subjects = ["A person", "A man", "A figure"]
         for file in files:            
             style = file.split('_')[-2]
             content = file.split('_')[-3]
-            if content in contents:
-                try:
-                    motion = np.load(pjoin(opt.motion_dir, file))
-                    if len(motion) < min_motion_len:
-                        continue
-                    
-                    description = content.replace("-", " ") + " " + style.replace("-", " ")
-                    if len(motion) > opt.max_motion_length:
-                        # start window sliding
-                        i = 0
-                        rand_len = np.random.randint(min_motion_len, opt.max_motion_length+1)
-                        while i + rand_len < len(motion):
-                            sub_motion = motion[i: i+rand_len, :]
-                            sub_length = rand_len
-                            
-                            text_dict = {}
-                            text_dict['caption'] = description
-                            new_name = file + f'_{i}'
-                            
-                            data_dict[new_name] = {'motion': sub_motion,
-                                                    'length': sub_length,
-                                                    'text':[text_dict],
-                                                    'style_name':style,
-                                                    'content': content}
-                            new_name_list.append(new_name)
-                            length_list.append(sub_length)
+            if split == "train":
+                if file in test_list:
+                    continue
+            elif file not in test_list:
+                continue
 
-                            rand_len = np.random.randint(min_motion_len, opt.max_motion_length+1)
-                            i += offset
-                    else:
-                        rand_len = np.random.randint(min_motion_len, len(motion)+1)
-                        sub_motion = motion[:rand_len]
+            try:
+                motion = np.load(pjoin(opt.motion_dir, file))
+                if len(motion) < min_motion_len:
+                    continue
+                
+                content = content.split('-')
+                content[0] += 's'
+                content = " ".join(content)
+                description = content + " " + style.replace("-", " ")
+                if len(motion) > opt.max_motion_length:
+                    # start window sliding
+                    i = 0
+                    rand_len = np.random.randint(min_motion_len, opt.max_motion_length+1)
+                    while i + rand_len < len(motion):
+                        sub_motion = motion[i: i+rand_len, :]
                         sub_length = rand_len
-                        text_dict = {}
-                        text_dict['caption'] = description
-                        new_name = file
+                        
+                        text_data = []
+                        for subject in subjects:
+                            text_dict = {}
+                            text_dict['caption'] = subject + " " + description
+                            text_data.append(text_dict)
+
+                        new_name = file + f'_{i}'
+                        
                         data_dict[new_name] = {'motion': sub_motion,
-                                                    'length': sub_length,
-                                                    'text':[text_dict],
-                                                    'style_name': style,
-                                                    'content': content}
+                                                'length': sub_length,
+                                                'text':text_data,
+                                                'style_name':style,
+                                                'content': content}
                         new_name_list.append(new_name)
                         length_list.append(sub_length)
 
-                except:
-                    pass
+                        rand_len = np.random.randint(min_motion_len, opt.max_motion_length+1)
+                        i += offset
+                else:
+                    rand_len = np.random.randint(min_motion_len, len(motion)+1)
+                    sub_motion = motion[:rand_len]
+                    sub_length = rand_len
+                    
+                    text_data = []
+                    for subject in subjects:
+                        text_dict = {}
+                        # text_dict['caption'] = description
+                        text_dict['caption'] = subject + " " + description
+                        text_data.append(text_dict)
+                    new_name = file
+                    data_dict[new_name] = {'motion': sub_motion,
+                                                'length': sub_length,
+                                                'text':text_data,
+                                                'style_name': style,
+                                                'content': content}
+                    new_name_list.append(new_name)
+                    length_list.append(sub_length)
+
+            except:
+                pass
 
         name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
 
@@ -437,6 +453,44 @@ class BandaiDataset(data.Dataset):
     def __len__(self):
         return len(self.data_dict) - self.pointer
     
+    def process_np_motion(self, motion_path):
+        
+        if os.path.isfile(motion_path):
+            data = np.load(motion_path)
+        else:
+            data = motion_path
+        
+        motion = data
+        m_length = data.shape[0]
+        
+        # # Crop the motions in to times of 4, and introduce small variations
+        # if self.opt.unit_length < 10:
+        #     coin2 = np.random.choice(['single', 'single', 'double'])
+        # else:
+        #     coin2 = 'single'
+
+        # if coin2 == 'double':
+        #     m_length = (m_length // self.opt.unit_length - 1) * self.opt.unit_length
+        # elif coin2 == 'single':
+        #     m_length = (m_length // self.opt.unit_length) * self.opt.unit_length
+        # idx = random.randint(0, len(motion) - m_length)
+        # motion = motion[idx:idx+m_length]
+
+        "Z Normalization"
+        motion = (motion - self.mean) / self.std
+
+        if m_length < self.max_motion_length:
+            motion = np.concatenate([motion,
+                                     np.zeros((self.max_motion_length - m_length, motion.shape[1]))
+                                     ], axis=0)
+            
+        if m_length > self.max_motion_length:
+            motion = motion[:self.max_motion_length, :]
+            m_length = self.max_motion_length
+
+        return motion, m_length  
+        
+    
     def __getitem__(self, item):
         idx = self.pointer + item
         data = self.data_dict[self.name_list[idx]]
@@ -446,7 +500,6 @@ class BandaiDataset(data.Dataset):
         text_data = random.choice(text_list)
 
         caption = text_data['caption']
-
 
         # Crop the motions in to times of 4, and introduce small variations
         if self.opt.unit_length < 10:
@@ -470,6 +523,182 @@ class BandaiDataset(data.Dataset):
                                      ], axis=0)
     
         return caption, motion, m_length, style_name
+
+
+class StyleXia(data.Dataset):
+    def __init__(self, opt, mean, std, split, offset=10):
+        self.opt = opt
+        self.max_length = 7
+        self.pointer = 0
+        self.max_motion_length = opt.max_motion_length
+        min_motion_len = 8
+        data_dict = {}
+        
+        from dataset.stylexia_split import test_list
+        if split == 'eval':
+            split = 'test'
+        
+        new_name_list = []
+        length_list = []
+    
+        files = os.listdir(opt.motion_dir)
+
+        subjects = ["A person is", "A man is", "A figure is"]
+        for file in files:            
+            style = file.split("_")[0][3:]
+            content = file.split("_")[1][:-4]
+            if split == "train":
+                if file in test_list:
+                    continue
+            elif file not in test_list:
+                continue
+
+            try:
+                motion = np.load(pjoin(opt.motion_dir, file))
+                if len(motion) < min_motion_len:
+                    continue
+                description = content + " " + style
+                if len(motion) > opt.max_motion_length:
+                    # start window sliding
+                    i = 0
+                    rand_len = np.random.randint(min_motion_len, opt.max_motion_length+1)
+                    while i + rand_len < len(motion):
+                        sub_motion = motion[i: i+rand_len, :]
+                        sub_length = rand_len
+                        
+                        text_data = []
+                        for subject in subjects:
+                            text_dict = {}
+                            text_dict['caption'] = subject + " " + description
+                            text_data.append(text_dict)
+
+                        new_name = file + f'_{i}'
+                        
+                        data_dict[new_name] = {'motion': sub_motion,
+                                                'length': sub_length,
+                                                'text':text_data,
+                                                'style_name':style,
+                                                'content': content}
+                        new_name_list.append(new_name)
+                        length_list.append(sub_length)
+
+                        rand_len = np.random.randint(min_motion_len, opt.max_motion_length+1)
+                        i += offset
+                else:
+                    rand_len = np.random.randint(min_motion_len, len(motion)+1)
+                    sub_motion = motion[:rand_len]
+                    sub_length = rand_len
+                    
+                    text_data = []
+                    for subject in subjects:
+                        text_dict = {}
+                        # text_dict['caption'] = description
+                        text_dict['caption'] = subject + " " + description
+                        text_data.append(text_dict)
+                    new_name = file
+                    data_dict[new_name] = {'motion': sub_motion,
+                                                'length': sub_length,
+                                                'text':text_data,
+                                                'style_name': style,
+                                                'content': content}
+                    new_name_list.append(new_name)
+                    length_list.append(sub_length)
+
+            except:
+                pass
+
+        name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
+
+        self.mean = mean
+        self.std = std
+        self.length_arr = np.array(length_list)
+        self.data_dict = data_dict
+        self.name_list = name_list
+        self.reset_max_len(self.max_length)    
+
+    def reset_max_len(self, length):
+        assert length <= self.max_motion_length
+        self.pointer = np.searchsorted(self.length_arr, length)
+        print("Pointer Pointing at %d"%self.pointer)
+        self.max_length = length
+
+    def inv_transform(self, data):
+        return data * self.std + self.mean
+
+    def __len__(self):
+        return len(self.data_dict) - self.pointer
+    
+    def process_np_motion(self, motion_path):
+    
+        if os.path.isfile(motion_path):
+            data = np.load(motion_path)
+        else:
+            data = motion_path
+        
+        motion = data
+        m_length = data.shape[0]
+        
+        # # Crop the motions in to times of 4, and introduce small variations
+        # if self.opt.unit_length < 10:
+        #     coin2 = np.random.choice(['single', 'single', 'double'])
+        # else:
+        #     coin2 = 'single'
+
+        # if coin2 == 'double':
+        #     m_length = (m_length // self.opt.unit_length - 1) * self.opt.unit_length
+        # elif coin2 == 'single':
+        #     m_length = (m_length // self.opt.unit_length) * self.opt.unit_length
+        # idx = random.randint(0, len(motion) - m_length)
+        # motion = motion[idx:idx+m_length]
+
+        "Z Normalization"
+        motion = (motion - self.mean) / self.std
+
+        if m_length < self.max_motion_length:
+            motion = np.concatenate([motion,
+                                     np.zeros((self.max_motion_length - m_length, motion.shape[1]))
+                                     ], axis=0)
+            
+        if m_length > self.max_motion_length:
+            motion = motion[:self.max_motion_length, :]
+            m_length = self.max_motion_length
+
+        return motion, m_length  
+        
+    
+    def __getitem__(self, item):
+        idx = self.pointer + item
+        data = self.data_dict[self.name_list[idx]]
+
+        motion, m_length, text_list, style_name = data['motion'], data['length'], data['text'], data['style_name']
+        # Randomly select a caption
+        text_data = random.choice(text_list)
+
+        caption = text_data['caption']
+
+        # Crop the motions in to times of 4, and introduce small variations
+        if self.opt.unit_length < 10:
+            coin2 = np.random.choice(['single', 'single', 'double'])
+        else:
+            coin2 = 'single'
+
+        if coin2 == 'double':
+            m_length = (m_length // self.opt.unit_length - 1) * self.opt.unit_length
+        elif coin2 == 'single':
+            m_length = (m_length // self.opt.unit_length) * self.opt.unit_length
+        idx = random.randint(0, len(motion) - m_length)
+        motion = motion[idx:idx+m_length]
+
+        "Z Normalization"
+        motion = (motion - self.mean) / self.std
+
+        if m_length < self.max_motion_length:
+            motion = np.concatenate([motion,
+                                     np.zeros((self.max_motion_length - m_length, motion.shape[1]))
+                                     ], axis=0)
+    
+        return caption, motion, m_length, style_name
+
 
 class BandaiDatasetPairs(data.Dataset):
     def __init__(self, opt, mean, std, split, offset=40):
@@ -703,9 +932,47 @@ class Text2MotionDatasetV2(data.Dataset):
 
     def __len__(self):
         return len(self.data_dict) - self.pointer
+    
+    def process_np_motion(self, motion_path):
+        if type(motion_path) is str:
+            data = np.load(motion_path)
+        else:
+            data = motion_path
+        
+        motion = data
+        m_length = data.shape[0]
+        
+        # # Crop the motions in to times of 4, and introduce small variations
+        # if self.opt.unit_length < 10:
+        #     coin2 = np.random.choice(['single', 'single', 'double'])
+        # else:
+        #     coin2 = 'single'
+
+        # if coin2 == 'double':
+        #     m_length = (m_length // self.opt.unit_length - 1) * self.opt.unit_length
+        # elif coin2 == 'single':
+        #     m_length = (m_length // self.opt.unit_length) * self.opt.unit_length
+        # idx = random.randint(0, len(motion) - m_length)
+        # motion = motion[idx:idx+m_length]
+
+        "Z Normalization"
+        motion = (motion - self.mean) / self.std
+
+        if m_length < self.max_motion_length:
+            motion = np.concatenate([motion,
+                                     np.zeros((self.max_motion_length - m_length, motion.shape[1]))
+                                     ], axis=0)
+            
+        if m_length > self.max_motion_length:
+            motion = motion[:self.max_motion_length, :]
+            m_length = self.max_motion_length
+
+        return motion, m_length  
+           
 
     def __getitem__(self, item):
         idx = self.pointer + item
+        name = self.name_list[idx]
         data = self.data_dict[self.name_list[idx]]
         motion, m_length, text_list = data['motion'], data['length'], data['text']
         # Randomly select a caption
@@ -753,7 +1020,7 @@ class Text2MotionDatasetV2(data.Dataset):
                                      ], axis=0)
         # print(word_embeddings.shape, motion.shape)
         # print(tokens)
-        return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens)
+        return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens), name
 
 
 '''For use of training baseline'''
@@ -1216,13 +1483,11 @@ class HumanML3D_Style(data.Dataset):
         self.opt = opt
         print('Loading dataset %s ...' % self.dataset_name)
 
-      
         if mode in ['train', 'eval', 'text_only']:
             # used by our models
             self.mean = np.load(pjoin(opt.t2m_root, 'Mean.npy'))
             self.std = np.load(pjoin(opt.t2m_root, 'Std.npy'))
-        
-        
+                
         self.split = split
         if mode in ['train', 'eval', 'text_only']:
             if self.dataset_name == 'style100':
@@ -1243,6 +1508,72 @@ class HumanML3D_Style(data.Dataset):
 
     def __len__(self):
         return self.style_dataset.__len__()
+
+
+
+class StyleDataset(data.Dataset):
+    def __init__(self, mode, datapath='./dataset/style100_opt.txt', split="train", dataset_name='style100', **kwargs):
+        self.mode = mode
+        
+        self.dataset_name = dataset_name
+        self.dataname = dataset_name
+        if dataset_name == 'bandai-1':
+            datapath = './dataset/bandai1_opt.txt'
+        elif dataset_name == 'bandai-2':
+            datapath = './dataset/bandai2_opt.txt'
+        elif dataset_name == 'bandai-1_posrot':
+            datapath = './dataset/bandai1_posrot_opt.txt'
+        elif dataset_name == 'bandai-2_posrot':
+            datapath = './dataset/bandai2_posrot_opt.txt'
+        elif dataset_name == 'stylexia_posrot':
+            datapath = './dataset/stylexia_posrot_opt.txt'
+
+    
+        # Configurations of T2M dataset and KIT dataset is almost the same
+        abs_base_path = f'.'
+        dataset_opt_path = pjoin(abs_base_path, datapath)
+        device = None  # torch.device('cuda:4') # This param is not in use in this context
+        opt = get_opt(dataset_opt_path, device)
+        opt.meta_dir = pjoin(abs_base_path, opt.meta_dir)  # not use 
+        opt.motion_dir = pjoin(abs_base_path, opt.motion_dir)  
+        # opt.text_description = pjoin(abs_base_path, opt.text_description) 
+        opt.model_dir = pjoin(abs_base_path, opt.model_dir) # not use
+        opt.checkpoints_dir = pjoin(abs_base_path, opt.checkpoints_dir) # not use
+        opt.data_root = pjoin(abs_base_path, opt.data_root) 
+        opt.save_root = pjoin(abs_base_path, opt.save_root) #not used 
+        opt.t2m_root = pjoin(abs_base_path, opt.t2m_root)
+        opt.meta_dir = './dataset'
+        self.opt = opt
+        print('Loading dataset %s ...' % self.dataset_name)
+
+        if mode in ['train', 'eval', 'text_only']:
+            # used by our models
+            self.mean = np.load(pjoin(opt.t2m_root, 'Mean.npy'))
+            self.std = np.load(pjoin(opt.t2m_root, 'Std.npy'))
+                
+        self.split = split
+        if mode in ['train', 'eval', 'text_only']:
+            if self.dataset_name == 'style100':
+                self.t2m_dataset = StyleMotionDataset(self.opt, self.mean, self.std, self.split, offset=40)
+            elif self.dataset_name in ["bandai-1", "bandai-2", "bandai-1_posrot", "bandai-2_posrot"]:
+                if kwargs.get("pairs", False):
+                    self.t2m_dataset = BandaiDatasetPairs(self.opt, self.mean, self.std, self.split, offset=40)
+                else:
+                    self.t2m_dataset = BandaiDataset(self.opt, self.mean, self.std, self.split, offset=40)
+            elif self.dataset_name == 'stylexia_posrot':
+                self.t2m_dataset = StyleXia(self.opt, self.mean, self.std, self.split)
+                               
+        assert len(self.t2m_dataset) > 1, 'You loaded an empty dataset, ' \
+                                          'it is probably because your data dir has only texts and no motions.\n' \
+                                          'To train and evaluate MDM you should get the FULL data as described ' \
+                                          'in the README file.'
+
+    def __getitem__(self, item):
+        return self.t2m_dataset.__getitem__(item)
+
+    def __len__(self):
+        return self.t2m_dataset.__len__()
+
 
 
 # A wrapper class for t2m original dataset for MDM purposes

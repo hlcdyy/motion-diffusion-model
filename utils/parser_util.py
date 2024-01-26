@@ -12,8 +12,12 @@ def parse_and_load_from_model(parser):
     add_diffusion_options(parser)
     args = parser.parse_args()
     args_to_overwrite = []
-    for group_name in ['dataset', 'model', 'diffusion']:
-        args_to_overwrite += get_args_per_group_name(parser, args, group_name)
+    for group_name in ['dataset', 'model', 'diffusion', 'style inpainting', "inpainting module"]:
+    # for group_name in ['dataset', 'model', 'diffusion']:
+        try:
+            args_to_overwrite += get_args_per_group_name(parser, args, group_name)
+        except:
+            continue
 
     # load args from model
     model_path = get_model_path_from_args()
@@ -143,7 +147,7 @@ def add_transfer_module_options(parser):
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
     group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 
-                                                                'uestc', 'style100'], type=str,
+                                                                'uestc', 'style100', 'bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot'], type=str,
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
@@ -181,6 +185,42 @@ def add_training_options(parser):
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file). if is directory, then find the latest file")
+
+def add_finetune_motion_control_options(parser):
+    group = parser.add_argument_group('training')
+    group.add_argument("--save_dir", required=True, type=str,
+                       help="Path to save checkpoints and results.")
+    group.add_argument("--motion_enc_path", default = './save/my_motion_enc_512/model000600161.pt', type=str,
+                       help="Path to model####.pt file to be sampled.") 
+    group.add_argument("--overwrite", action='store_true',
+                       help="If True, will enable to use an already existing save_dir.")
+    group.add_argument("--train_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform'], type=str,
+                       help="Choose platform to log results. NoPlatform means no logging.")
+    group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
+    group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
+    group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
+    group.add_argument("--eval_batch_size", default=32, type=int,
+                       help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
+                            "T2m precision calculation is based on fixed batch size 32.")
+    group.add_argument("--eval_split", default='test', choices=['val', 'test'], type=str,
+                       help="Which split to evaluate on during training.")
+    group.add_argument("--eval_during_training", action='store_true',
+                       help="If True, will run evaluation during training.")
+    group.add_argument("--eval_rep_times", default=3, type=int,
+                       help="Number of repetitions for evaluation loop during training.")
+    group.add_argument("--eval_num_samples", default=1_000, type=int,
+                       help="If -1, will use all samples in the specified split.")
+    group.add_argument("--log_interval", default=1_000, type=int,
+                       help="Log losses each N steps")
+    group.add_argument("--save_interval", default=50_000, type=int,
+                       help="Save checkpoints and run evaluation each N steps")
+    group.add_argument("--num_steps", default=600_000, type=int,
+                       help="Training will stop after the specified number of steps.")
+    group.add_argument("--num_frames", default=60, type=int,
+                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+    group.add_argument("--resume_checkpoint", default='', required=False, type=str,
+                       help="If not empty, will start from the specified checkpoint (path to model###.pt file). if is directory, then find the latest file")
+
 
 def add_fintune_motion_enc_options(parser):
     group = parser.add_argument_group('fintune motion encoder through style dataset')
@@ -337,6 +377,10 @@ def add_stytransfer_options(parser):
     group.add_argument("--style_dataset", default='style100', choices=['style100', 'bandai-1', 'bandai-2'], type=str,
                        help="Dataset name (choose from list).")
 
+def add_vis_motionenc_options(parser):
+    group = parser.add_argument_group('inpainting module')
+    group.add_argument("--mdm_path", default='', type=str,
+                       help="Path to model####.pt file to be sampled.")
 
 def add_style_inpainting_options(parser):
     group = parser.add_argument_group('style inpainting')
@@ -347,7 +391,18 @@ def add_style_inpainting_options(parser):
                            or one of the joints in the humanml body format: \
                            pelvis, left_hip, right_hip, spine1, left_knee, right_knee, spine2, left_ankle, right_ankle, spine3, left_foot, \
                             right_foot, neck, left_collar, right_collar, head, left_shoulder, right_shoulder, left_elbow, right_elbow, left_wrist, right_wrist,")
+    return group
 
+def add_inpainting_style_options(parser):
+    group = add_style_inpainting_options(parser)
+    group.add_argument('--inpainting_model_path', type=str, default='./save/my_inpainting_model/model000080047.pt')
+    group.add_argument('--skip_steps', type=int, default=700)
+    group.add_argument('--style_finetune', type=int, default=1)
+    group.add_argument('--weakly_style_pair', type=int, default=0)
+    group.add_argument('--use_ddim', type=int, default=0)
+    group.add_argument('--Ls', type=float, default=10)
+    group.add_argument('--style_file', type=str, default="")
+    
 
 def add_reconstruction_options(parser):
     group = parser.add_argument_group('reconstruction')
@@ -388,6 +443,33 @@ def add_transfer_module_args(parser):
                        help="style datset names for evaluating style transfer module.") 
     group.add_argument("--zero_conv", action='store_true', help="whether use zero_conv")
 
+
+def add_motion_inpainting_args(parser):
+    group = parser.add_argument_group('inpainting module')
+    group.add_argument("--mdm_path", default='./save/my_humanml_trans_enc_512/model000600161.pt', type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--motion_enc_path", default = './save/my_motion_enc_512/model000600161.pt', type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--model_path", required=True, type=str,
+                       help="Path to style transfer moduel.")
+    group.add_argument("--output_dir", default='', type=str,
+                       help="Path to results dir (auto created by the script). "
+                            "If empty, will create dir in parallel to checkpoint.")
+    group.add_argument("--num_samples", default=10, type=int,
+                       help="Maximal number of prompts to sample, "
+                            "if loading dataset from file, this field will be ignored.")
+    group.add_argument("--num_repetitions", default=3, type=int,
+                       help="Number of repetitions, per sample (text prompt/action)")
+    group.add_argument("--guidance_param", default=2.5, type=float,
+                       help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
+    group.add_argument('--is_using_data', default=1, type=int,
+                       help="Whether using examples extracted from dataset as inpainted input motion")
+    
+    return group
+
+def add_motion_inpainting_style_args(parser):
+    group = add_motion_inpainting_args(parser)
+    
     
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
@@ -439,7 +521,7 @@ def add_evaluation_options(parser):
 def get_cond_mode(args):
     if args.unconstrained:
         cond_mode = 'no_cond'
-    elif args.dataset in ['kit', 'humanml']:
+    elif args.dataset in ['kit', 'humanml', 'bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot']:
         cond_mode = 'text'
     else:
         cond_mode = 'action'
@@ -460,6 +542,14 @@ def train_motion_encoder_args():
     add_base_options(parser)
     add_data_options(parser)
     add_motion_encoder_options(parser)
+    add_training_options(parser)
+    return parser.parse_args()
+
+def train_motion_trajectory_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    add_model_options(parser)
     add_training_options(parser)
     return parser.parse_args()
 
@@ -500,7 +590,39 @@ def train_style_diffusion_module_args():
     add_diffusion_options(parser)
     add_style_inpainting_options(parser)
     return parser.parse_args()
-    
+
+def train_inpainting_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    add_finetune_motion_control_options(parser)
+    add_diffusion_options(parser)
+    add_motion_encoder_options(parser)
+    # add_training_options(parser)
+    add_style_inpainting_options(parser)
+    return parser.parse_args()
+
+def train_inpainting_from_scratch_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    add_model_options(parser)
+    add_diffusion_options(parser)
+    add_style_inpainting_options(parser)
+    add_training_options(parser)
+    return parser.parse_args()
+
+def finetune_inpainting_style_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_data_options(parser)
+    add_finetune_motion_control_options(parser)
+    add_diffusion_options(parser)
+    add_motion_encoder_options(parser)
+    # add_training_options(parser)
+    add_inpainting_style_options(parser)
+    return parser.parse_args()
+
 def eval_style_diffusion_module_args():
     parser = ArgumentParser()
     add_base_options(parser)
@@ -517,6 +639,52 @@ def eval_style_diffusion_module_args():
 
     return args
     
+def eval_inpainting_module_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    # add_motion_encoder_options(parser)
+    add_generate_options(parser)
+    add_style_inpainting_options(parser)
+    # add_evaluation_options(parser)
+    add_motion_inpainting_args(parser)
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args) 
+
+    if (args.input_text or args.text_prompt) and cond_mode != 'text':
+        raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
+    elif (args.action_file or args.action_name) and cond_mode != 'action':
+        raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
+
+    return args
+
+
+def eval_inpainting_style_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    # add_motion_encoder_options(parser)
+    add_generate_options(parser)
+    add_inpainting_style_options(parser)
+    # add_evaluation_options(parser)
+    add_motion_inpainting_style_args(parser)
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args) 
+
+    if (args.input_text or args.text_prompt) and cond_mode != 'text':
+        raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
+    elif (args.action_file or args.action_name) and cond_mode != 'action':
+        raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
+
+    return args
+
+def eval_motion_encoder_args():
+    parser = ArgumentParser()
+    add_base_options(parser)
+    add_vis_motionenc_options(parser)
+    add_evaluation_options(parser)
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args) 
+    return args
+
         
 def style_transfer_args():
     parser = ArgumentParser()
@@ -568,7 +736,15 @@ def reconstruct_args():
         raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
 
     return args
-    
+
+def predict_trajectory_args():
+    parser = ArgumentParser()
+    # args specified by the user: (all other will be loaded from the model)
+    add_base_options(parser)
+    add_sampling_options(parser)
+    args = parse_and_load_from_model(parser)
+    cond_mode = get_cond_mode(args)
+    return args
 
 def generate_args():
     parser = ArgumentParser()

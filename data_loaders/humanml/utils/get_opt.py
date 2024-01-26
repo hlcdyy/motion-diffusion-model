@@ -88,6 +88,26 @@ def get_opt(opt_path, device):
         opt.joints_num = 22
         opt.dim_pose = 263
         opt.max_motion_length = 196
+        
+    elif opt.dataset_name in ['bandai-1_posrot', 'bandai-2_posrot']:
+        if opt.dataset_name == 'bandai-1_posrot':
+            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-1_with_rotation/'
+        else:
+            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/'
+        opt.t2m_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/'
+        opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
+        opt.joints_num = 21
+        opt.dim_pose = 190
+        opt.max_motion_length = 196
+
+    elif opt.dataset_name == 'stylexia_posrot':
+        
+        opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/style_xia_with_rotation/'
+        opt.t2m_root = '/data/hulei/Projects/Style100_2_HumanML/style_xia_with_rotation/'
+        opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
+        opt.joints_num = 20
+        opt.dim_pose = 181
+        opt.max_motion_length = 76
     
     else:
         raise KeyError('Dataset not recognized')

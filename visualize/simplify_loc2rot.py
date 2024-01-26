@@ -12,13 +12,13 @@ import argparse
 
 class joints2smpl:
 
-    def __init__(self, num_frames, device_id, cuda=True):
+    def __init__(self, num_frames, device_id, cuda=True, num_smplify_iters=150):
         self.device = torch.device("cuda:" + str(device_id) if cuda else "cpu")
         # self.device = torch.device("cpu")
         self.batch_size = num_frames
         self.num_joints = 22  # for HumanML3D
         self.joint_category = "AMASS"
-        self.num_smplify_iters = 150
+        self.num_smplify_iters = num_smplify_iters
         self.fix_foot = False
         print(config.SMPL_MODEL_DIR)
         smplmodel = smplx.create(config.SMPL_MODEL_DIR,

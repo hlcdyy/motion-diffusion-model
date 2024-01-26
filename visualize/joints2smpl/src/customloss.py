@@ -147,6 +147,10 @@ def body_fitting_loss_3d(body_pose, preserve_pose,
     
     joint3d_error = gmof((model_joints + camera_translation) - j3d, sigma)
     
+    # add more weight on foot_joints
+    # joint3d_error_foot = gmof((model_joints[..., [7,8,10,11], :] + camera_translation) - j3d[..., [7,8,10,11], :], sigma)
+    # joints3d_conf[[7,8,10,11]] = 300
+
     joint3d_loss_part = (joints3d_conf ** 2) * joint3d_error.sum(dim=-1)
     joint3d_loss = ((joint_loss_weight ** 2) * joint3d_loss_part).sum(dim=-1)
     

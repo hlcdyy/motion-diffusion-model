@@ -38,7 +38,7 @@ def main():
             out_path += '_' + args.text_prompt.replace(' ', '_').replace('.', '')
         elif args.input_text != '':
             out_path += '_' + os.path.basename(args.input_text).replace('.txt', '').replace(' ', '_').replace('.', '')
-
+            
     # this block must be called BEFORE the dataset is loaded
     if args.text_prompt != '':
         texts = [args.text_prompt]
@@ -132,8 +132,7 @@ def main():
         # print(torch.mean(beta[index, ...], 0))   
         # 
     
-      
-    
+
 
 
 

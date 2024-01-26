@@ -264,7 +264,7 @@ class GaussianDiffusion:
         )
         return mean, variance, log_variance
 
-    def q_sample(self, x_start, t, noise=None):
+    def q_sample(self, x_start, t, noise=None, model_kwargs=None):
         """
         Diffuse the dataset for a given number of diffusion steps.
 
@@ -539,6 +539,7 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         const_noise=False,
+        pred_xstart_in_graph=False,
     ):
         """
         Sample x_{t-1} from the model at the given timestep.
@@ -592,6 +593,8 @@ class GaussianDiffusion:
         denoised_fn=None,
         cond_fn=None,
         model_kwargs=None,
+        pred_xstart_in_graph=False,
+        const_noise=False,
     ):
         """
         Sample x_{t-1} from the model at the given timestep.
@@ -621,6 +624,8 @@ class GaussianDiffusion:
                 model_kwargs=model_kwargs,
             )
             noise = th.randn_like(x)
+            if const_noise:
+                noise = noise[[0]].repeat(x.shape[0], 1, 1, 1)
             nonzero_mask = (
                 (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
             )  # no noise when t == 0
@@ -629,7 +634,12 @@ class GaussianDiffusion:
                     cond_fn, out, x, t, model_kwargs=model_kwargs
                 )
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
-        return {"sample": sample, "pred_xstart": out["pred_xstart"].detach()}
+        
+        if pred_xstart_in_graph:
+            out_xstart = out["pred_xstart"]
+        else:
+            out_xstart = out["pred_xstart"].detach()
+        return {"sample": sample, "pred_xstart": out_xstart}
 
     def p_sample_loop(
         self,
@@ -648,6 +658,9 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         dump_steps=None,
         const_noise=False,
+        pred_xstart_in_graph=False,
+        dump_all_xstart=False,
+        stop_timesteps=None
     ):
         """
         Generate samples from the model.
@@ -670,9 +683,9 @@ class GaussianDiffusion:
         :return: a non-differentiable batch of samples.
         """
         final = None
-        if dump_steps is not None:
+        if dump_steps is not None or dump_all_xstart:
             dump = []
-
+               
         for i, sample in enumerate(self.p_sample_loop_progressive(
             model,
             shape,
@@ -688,11 +701,16 @@ class GaussianDiffusion:
             randomize_class=randomize_class,
             cond_fn_with_grad=cond_fn_with_grad,
             const_noise=const_noise,
+            pred_xstart_in_graph=pred_xstart_in_graph,
+            stop_timesteps=stop_timesteps,
+                  
         )):
             if dump_steps is not None and i in dump_steps:
                 dump.append(deepcopy(sample["sample"]))
+            if dump_all_xstart:
+                dump.append(sample["pred_xstart"])
             final = sample
-        if dump_steps is not None:
+        if dump_steps is not None or dump_all_xstart:
             return dump
         return final["sample"]
 
@@ -712,6 +730,8 @@ class GaussianDiffusion:
         randomize_class=False,
         cond_fn_with_grad=False,
         const_noise=False,
+        pred_xstart_in_graph=False,
+        stop_timesteps=None,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -722,7 +742,11 @@ class GaussianDiffusion:
         p_sample().
         """
         if device is None:
-            device = next(model.parameters()).device
+            try:
+                device = next(model.parameters()).device
+            except:
+                device = next(model.model.parameters()).device
+                
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
@@ -731,8 +755,11 @@ class GaussianDiffusion:
 
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
-
+        
         indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
+        if stop_timesteps is not None:
+            # indices = list(range(stop_timesteps, self.num_timesteps))[::-1]
+            indices = list(range(stop_timesteps, self.num_timesteps - skip_timesteps))[::-1]
 
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
@@ -751,7 +778,7 @@ class GaussianDiffusion:
                                                size=model_kwargs['y'].shape,
                                                device=model_kwargs['y'].device)
             with th.no_grad():
-                sample_fn = self.p_sample_with_grad if cond_fn_with_grad else self.p_sample
+                sample_fn = self.p_sample_with_grad if cond_fn_with_grad or pred_xstart_in_graph else self.p_sample
                 out = sample_fn(
                     model,
                     img,
@@ -761,6 +788,7 @@ class GaussianDiffusion:
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
                     const_noise=const_noise,
+                    pred_xstart_in_graph=pred_xstart_in_graph
                 )
                 yield out
                 img = out["sample"]
@@ -775,6 +803,7 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         eta=0.0,
+        pred_xstart_in_graph=False,
     ):
         """
         Sample x_{t-1} from the model using DDIM.
@@ -827,7 +856,8 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         eta=0.0,
-    ):
+        pred_xstart_in_graph=False,
+    ):  
         """
         Sample x_{t-1} from the model using DDIM.
 
@@ -848,8 +878,8 @@ class GaussianDiffusion:
                                                      model_kwargs=model_kwargs)
             else:
                 out = out_orig
-
-        out["pred_xstart"] = out["pred_xstart"].detach()
+        if not pred_xstart_in_graph:
+            out["pred_xstart"] = out["pred_xstart"].detach()
 
         # Usually our model outputs epsilon, but we re-derive it
         # in case we used x_start or x_prev prediction.
@@ -872,7 +902,10 @@ class GaussianDiffusion:
             (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
         )  # no noise when t == 0
         sample = mean_pred + nonzero_mask * sigma * noise
-        return {"sample": sample, "pred_xstart": out_orig["pred_xstart"].detach()}
+        if not pred_xstart_in_graph:
+            return {"sample": sample, "pred_xstart": out_orig["pred_xstart"].detach()}
+        else:
+            return {"sample": sample, "pred_xstart": out_orig["pred_xstart"]}
 
     def ddim_reverse_sample(
         self,
@@ -930,14 +963,18 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         dump_steps=None,
         const_noise=False,
+        pred_xstart_in_graph=False,
+        dump_all_xstart=False,
+        stop_timesteps=None
     ):
         """
         Generate samples from the model using DDIM.
 
         Same usage as p_sample_loop().
         """
-        if dump_steps is not None:
-            raise NotImplementedError()
+        if dump_steps is not None or dump_all_xstart:
+            # raise NotImplementedError()
+            dump = []
         if const_noise == True:
             raise NotImplementedError()
 
@@ -957,8 +994,14 @@ class GaussianDiffusion:
             init_image=init_image,
             randomize_class=randomize_class,
             cond_fn_with_grad=cond_fn_with_grad,
+            pred_xstart_in_graph=pred_xstart_in_graph,
+            stop_timesteps = stop_timesteps,
         ):
+            if dump_all_xstart:
+                dump.append(sample["pred_xstart"])
             final = sample
+        if dump_all_xstart:
+            return dump
         return final["sample"]
 
     def ddim_sample_loop_progressive(
@@ -977,6 +1020,8 @@ class GaussianDiffusion:
         init_image=None,
         randomize_class=False,
         cond_fn_with_grad=False,
+        pred_xstart_in_graph=False,
+        stop_timesteps=None,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -985,7 +1030,11 @@ class GaussianDiffusion:
         Same usage as p_sample_loop_progressive().
         """
         if device is None:
-            device = next(model.parameters()).device
+            try:
+                device = next(model.parameters()).device
+            except:
+                device = next(model.model.parameters()).device
+        
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
@@ -996,10 +1045,13 @@ class GaussianDiffusion:
             init_image = th.zeros_like(img)
 
         indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
+        if stop_timesteps is not None:
+            # indices = list(range(stop_timesteps, self.num_timesteps))[::-1]
+            indices = list(range(stop_timesteps, self.num_timesteps - skip_timesteps))[::-1]
 
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
-            img = self.q_sample(init_image, my_t, img)
+            img = self.q_sample(init_image, my_t, img, model_kwargs=model_kwargs)
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1014,7 +1066,7 @@ class GaussianDiffusion:
                                                size=model_kwargs['y'].shape,
                                                device=model_kwargs['y'].device)
             with th.no_grad():
-                sample_fn = self.ddim_sample_with_grad if cond_fn_with_grad else self.ddim_sample
+                sample_fn = self.ddim_sample_with_grad if cond_fn_with_grad or pred_xstart_in_graph else self.ddim_sample
                 out = sample_fn(
                     model,
                     img,
@@ -1024,6 +1076,7 @@ class GaussianDiffusion:
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
                     eta=eta,
+                    pred_xstart_in_graph=pred_xstart_in_graph,
                 )
                 yield out
                 img = out["sample"]
@@ -1287,7 +1340,7 @@ class GaussianDiffusion:
             model_kwargs = {}
         if noise is None:
             noise = th.randn_like(x_start)
-        x_t = self.q_sample(x_start, t, noise=noise)
+        x_t = self.q_sample(x_start, t, noise=noise, model_kwargs=model_kwargs)
 
         terms = {}
 
@@ -1474,6 +1527,192 @@ class GaussianDiffusion:
 
         return terms
     
+    def ablation_dis_losses(self, model, x_start, t, x_content_start, x_style_start, skip_steps=700, model_kwargs=None, noise=None, model_t2m_kwargs=None, weakly_style_pair=0, use_ddim=0):
+        style_id_mapping = {
+                "angry": 0,
+                "childlike":1,
+                "depressed":2,
+                "neutral":3,
+                "old":4,
+                "proud":5,
+                "sexy":6,
+                "strutting":7
+            }
+        dis = model.model.dis
+        mask = model_kwargs['y']['mask']
+        mask_t2m = model_t2m_kwargs['y']['mask']
+        texts = model_t2m_kwargs['y']['text']
+        style_id = []
+        for text in texts:
+            style_name = text.split(" ")[-1]
+            style_id.append(style_id_mapping[style_name])
+        style_id = torch.Tensor(style_id).long().to(x_start.device)
+        
+        
+        if model_kwargs is None:
+            model_kwargs = {}
+        if noise is None:
+            noise = torch.randn_like(x_content_start)
+        
+        noise_t2m = torch.rand_like(x_start)
+        x_t = self.q_sample(x_start, t, noise=noise_t2m, model_kwargs=model_t2m_kwargs)
+        
+        model_output = model(x_t, self._scale_timesteps(t), **model_t2m_kwargs) 
+        # ** the y["text"] in model_t2m_kwargs are modified by style word
+        
+        
+        if not use_ddim:
+            sample_fn = self.p_sample_loop
+        else:
+            sample_fn = self.ddim_sample_loop
+            skip_steps = int(skip_steps / 1000 * 20)
+
+        sample = sample_fn(
+            model,
+            x_content_start.shape,
+            clip_denoised=False,
+            model_kwargs=model_kwargs,
+            skip_timesteps=skip_steps,  # 0 is the default value - i.e. don't skip any step
+            init_image=x_content_start,
+            progress=True,
+            dump_steps=None,
+            noise=None,
+            const_noise=False,
+            cond_fn_with_grad=True,
+            pred_xstart_in_graph=True,
+            dump_all_xstart=True,
+        )
+
+        num_step = len(sample)
+        sample = torch.cat(sample, dim=0) # noised_step * b_size * J * 1 * seq
+        
+        terms = {}
+
+        target = x_style_start
+
+        target_t2m = x_start
+        
+        assert target_t2m.shape == x_start.shape
+        assert target.shape == x_content_start.shape  # [bs, njoints, nfeats, nframes]
+        
+        target = target.expand(num_step, -1, -1, -1)
+        mask = mask.expand(num_step, -1, -1, -1)
+        terms["rot_mse"] = self.masked_l2(target, sample, mask) # mean_flat(rot_mse)
+        
+        terms["rot_t2m_regulization"] = self.masked_l2(target_t2m, model_output, mask_t2m)
+        target_xyz, model_output_xyz = None, None
+
+        if weakly_style_pair:
+            loss_dis, accuracy, gan_feat = dis.calc_gen_loss(model_output, style_id)
+            terms["dis_loss"] = loss_dis
+            terms["accuracy"] = accuracy
+
+        if weakly_style_pair:     
+            terms["loss"] = terms["rot_mse"].mean()  \
+            + terms["rot_t2m_regulization"].mean() * 0 + terms["dis_loss"] * 0.001
+        else:
+            # 之前 rot_t2m_regulization并未起作用 weight = 0, 一直假设0.05
+            terms["loss"] = terms["rot_mse"].mean() + terms["rot_t2m_regulization"].mean() * 0
+        return terms
+
+
+    def few_shot_trans_losses(self, model, x_start, t, x_content_start, x_style_start, skip_steps=700, model_kwargs=None, noise=None, model_t2m_kwargs=None, weakly_style_pair=0, use_ddim=0, Ls=10):
+        # x_start is for regulization
+        # x_content_start is for learning the translation between content_motion and style motion
+        # x_style_start is the ground truth of the translation
+        try:
+            motion_enc = model.model.controlmdm.motion_enc
+        except:
+            motion_enc = model.model.motion_enc
+        mask = model_kwargs['y']['mask']
+        mask_t2m = model_t2m_kwargs['y']['mask']
+        
+        if model_kwargs is None:
+            model_kwargs = {}
+        if noise is None:
+            noise = th.randn_like(x_content_start)
+        
+        noise_t2m = th.rand_like(x_start)
+        x_t = self.q_sample(x_start, t, noise=noise_t2m, model_kwargs=model_t2m_kwargs)
+        
+        model_output = model(x_t, self._scale_timesteps(t), **model_t2m_kwargs) 
+        # ** the y["text"] in model_t2m_kwargs are modified by style word
+        
+        if weakly_style_pair:
+            mu, text_features = motion_enc(model_output, **model_t2m_kwargs)
+
+        if not use_ddim:
+            sample_fn = self.p_sample_loop
+        else:
+            sample_fn = self.ddim_sample_loop
+            skip_steps = int(skip_steps / 1000 * 20)
+
+        sample = sample_fn(
+            model,
+            x_content_start.shape,
+            clip_denoised=False,
+            model_kwargs=model_kwargs,
+            skip_timesteps=skip_steps,  # 0 is the default value - i.e. don't skip any step
+            init_image=x_content_start,
+            progress=True,
+            dump_steps=None,
+            noise=None,
+            const_noise=False,
+            cond_fn_with_grad=True,
+            pred_xstart_in_graph=True,
+            dump_all_xstart=True,
+        )
+
+        num_step = len(sample)
+        sample = th.cat(sample, dim=0) # noised_step * b_size * J * 1 * seq
+        
+        
+        # indices = th.from_numpy(np.ones((x_content_start.shape[0], ))).long().to(x_content_start.device)
+        # t = indices * noise_step
+
+        # xc_t = self.q_sample(x_content_start, t, noise=noise, model_kwargs=model_kwargs)
+
+        terms = {}
+
+        if self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
+            # model_output = model(xc_t, self._scale_timesteps(t), **model_kwargs)
+            
+            assert self.model_mean_type == ModelMeanType.START_X # only support predict x_0
+            target = x_style_start
+
+            target_t2m = x_start
+            
+            assert target_t2m.shape == x_start.shape
+            assert target.shape == x_content_start.shape  # [bs, njoints, nfeats, nframes]
+               
+            target = target.expand(num_step, -1, -1, -1)
+            mask = mask.expand(num_step, -1, -1, -1)
+            terms["rot_mse"] = self.masked_l2(target, sample, mask) # mean_flat(rot_mse)
+            
+            terms["rot_t2m_regulization"] = self.masked_l2(target_t2m, model_output, mask_t2m)
+            target_xyz, model_output_xyz = None, None
+
+            if weakly_style_pair:
+
+                features_norm = text_features / text_features.norm(dim=-1, keepdim=True)
+                mu_norm = mu / mu.norm(dim=-1, keepdim=True)
+
+                cos = cosine_sim(features_norm, mu_norm)
+                cosine_loss = (1 - cos).mean()
+                terms["text_cosine"] = cosine_loss
+
+            if weakly_style_pair:     
+                terms["loss"] = terms["rot_mse"].mean()  \
+                + terms["rot_t2m_regulization"].mean() * 0 + terms["text_cosine"] * Ls
+            else:
+                # 之前 rot_t2m_regulization并未起作用 weight = 0, 一直假设0.05
+                terms["loss"] = terms["rot_mse"].mean() + terms["rot_t2m_regulization"].mean() * 0
+
+        else:
+            raise NotImplementedError(self.loss_type)
+
+        return terms
+            
 
     def training_stylediffuse_losses(self, model, x_start, t, model_kwargs=None, noise=None, batch_normal=None, batch_style=None, normal_kwargs=None, style_kwargs=None):
         """
@@ -1492,7 +1731,7 @@ class GaussianDiffusion:
         # enc = model.model._modules['module']  
         motion_enc = model.model.motion_enc
         mask = model_kwargs['y']['mask']
-
+        
         style_mu, _ = motion_enc(batch_style, **style_kwargs)
         normal_mu, _ = motion_enc(batch_normal, **normal_kwargs)
         t2m_mu, _ = motion_enc(x_start, **model_kwargs)
@@ -1506,7 +1745,9 @@ class GaussianDiffusion:
             model_kwargs = {}
         if noise is None:
             noise = th.randn_like(x_start)
-        x_t = self.q_sample(x_start, t, noise=noise,  model_kwargs=model_kwargs1)
+        
+        # x_t is calculated from norm motion, so makes no senses in this scenario
+        x_t = self.q_sample(x_start, t, noise=noise, model_kwargs=model_kwargs1)
 
         terms = {}
 

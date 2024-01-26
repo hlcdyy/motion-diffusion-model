@@ -8,7 +8,7 @@ import os
 import numpy as np
 import torch
 from utils.parser_util import generate_args
-from utils.model_util import create_model_and_diffusion, load_model_wo_clip
+from utils.model_util import create_model_and_diffusion, load_model_wo_clip, creat_serval_diffusion
 from utils import dist_util
 from model.cfg_sampler import ClassifierFreeSampleModel
 from data_loaders.get_data import get_dataset_loader
@@ -25,7 +25,8 @@ def main():
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
-    max_frames = 196 if args.dataset in ['kit', 'humanml'] else 60
+    max_frames = 196 if args.dataset in ['kit', 'humanml', "bandai-1_posrot", "bandai-2_posrot"] else 60
+    max_frames = 76 if args.dataset == 'stylexia_posrot' else max_frames
     fps = 12.5 if args.dataset == 'kit' else 20
     n_frames = min(max_frames, int(args.motion_length*fps))
     is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name])
@@ -71,7 +72,21 @@ def main():
     total_num_samples = args.num_samples * args.num_repetitions
 
     print("Creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(args, data)
+    
+
+    if args.dataset in ['bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot']:
+        from model.mdm_forstyledataset import MDM as MDM1
+        model, inpainting_diffusion, normal_diffusion = creat_serval_diffusion(args, ModelClass=MDM1)
+        data_dir = '/data/hulei/Projects/Style100_2_HumanML/style_xia_with_rotation/new_joint_vecs'
+        inpainting_path = '282childlike_running.npy'
+        
+        inpainting_motions, style_m_length = data.dataset.t2m_dataset.process_np_motion(os.path.join(data_dir, inpainting_path))
+        inpainting_motions = torch.Tensor(inpainting_motions.T).unsqueeze(1).unsqueeze(0)
+        inpainting_motions = inpainting_motions.to(dist_util.dev())
+
+        
+    else:
+        model, diffusion = create_model_and_diffusion(args, data)
 
     print(f"Loading checkpoints from [{args.model_path}]...")
     state_dict = torch.load(args.model_path, map_location='cpu')
@@ -109,25 +124,54 @@ def main():
         if args.guidance_param != 1:
             model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
 
-        sample_fn = diffusion.p_sample_loop
+        if args.dataset == "stylexia_posrot":
+            from data_loaders.stylexia_posrot_utils import get_inpainting_mask
+            args.inpainting_mask = 'root_horizontal'
+            model_kwargs['y']['inpainted_motion'] = inpainting_motions
+            model_kwargs['y']['inpainting_mask'] = torch.tensor(get_inpainting_mask(args.inpainting_mask, inpainting_motions.shape)).float().to(dist_util.dev())
+    
+            sample_fn = inpainting_diffusion.p_sample_loop
 
-        sample = sample_fn(
-            model,
-            # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
-            (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
-            clip_denoised=False,
-            model_kwargs=model_kwargs,
-            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-            init_image=None,
-            progress=True,
-            dump_steps=None,
-            noise=None,
-            const_noise=False,
-        )
+            sample = sample_fn(
+                model,
+                # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
+                (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+                skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+                init_image=None,
+                progress=True,
+                dump_steps=None,
+                noise=None,
+                const_noise=False,
+                stop_timesteps=900,
+                dump_all_xstart=True,
+            )
+            sample = sample[-1]
+        
+        else:
+            sample_fn = diffusion.p_sample_loop
+        
+            sample = sample_fn(
+                model,
+                # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
+                (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+                skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+                init_image=None,
+                progress=True,
+                dump_steps=None,
+                noise=None,
+                const_noise=False,
+            )
 
         # Recover XYZ *positions* from HumanML3D vector representation
         if model.data_rep == 'hml_vec':
-            n_joints = 22 if sample.shape[1] == 263 else 21
+            if args.dataset == "stylexia_posrot":
+                n_joints = 20
+            else:
+                n_joints = 22 if sample.shape[1] == 263 else 21
             sample = data.dataset.t2m_dataset.inv_transform(sample.cpu().permute(0, 2, 3, 1)).float()
             sample = recover_from_ric(sample, n_joints)
             sample = sample.view(-1, *sample.shape[2:]).permute(0, 2, 3, 1)
@@ -171,6 +215,7 @@ def main():
 
     print(f"saving visualizations to [{out_path}]...")
     skeleton = paramUtil.kit_kinematic_chain if args.dataset == 'kit' else paramUtil.t2m_kinematic_chain
+    skeleton = paramUtil.xia_kinematic_chain if args.dataset == "stylexia_posrot" else skeleton
 
     sample_files = []
     num_samples_in_out_file = 7

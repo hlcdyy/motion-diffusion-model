@@ -3,6 +3,16 @@ save/
 t2m/
 kit/
 body_models/
+save_bandai_train/
+save_bandai/
+save_stylexia/
+save_stylexia_ablation/
+save_stylexia_ablation_dis/
+videos/
+eval_ablation/
+eval_neutral/
+eval_results/
+userstudy/
 
 # Byte-compiled / optimized / DLPL files
 __pycache__/
