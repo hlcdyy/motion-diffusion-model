@@ -40,10 +40,7 @@ def main():
 
     print("creating data loader...")
     
-    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot"]:
-        split = 'train'
-    else:
-        split = 'train'
+    split = 'train'
     data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split=split)
     
     print("creating model and diffusion...")
@@ -61,6 +58,8 @@ def main():
         from data_loaders.bandai_posrot_utils import get_inpainting_mask
     elif args.dataset == 'stylexia_posrot':
         from data_loaders.stylexia_posrot_utils import get_inpainting_mask
+    elif args.dataset == 'AIST_posrot':
+        from data_loaders.humanml_posrot_utils import get_inpainting_mask
     else:
         from data_loaders.humanml_utils import get_inpainting_mask
 

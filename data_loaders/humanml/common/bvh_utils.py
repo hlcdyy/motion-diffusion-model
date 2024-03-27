@@ -1475,15 +1475,23 @@ def remove_fs(output_path, glb_motion, ref_motion, bonenames, ee_names, interp_l
 
     return glb_motion, foot_vels, contacts, butter_motion
 
-def fit_joints_bvh(path, initial_data, joint_num, skeleton, real_offset, glb, names=None):
+def fit_joints_bvh(path, initial_data, joint_num, skeleton, real_offset, glb, names=None, use_lbfgs=False, iter_num=100):
 
     glb = torch.Tensor(glb)
-  
-    ik_solver = InverseKinematics_hmlvec(initial_data, joint_num, skeleton, real_offset, glb)
+
+    ik_solver = InverseKinematics_hmlvec(initial_data, joint_num, skeleton, real_offset, glb, use_lbfgs=use_lbfgs)
 
     # print('Removing Foot sliding')
-    for i in tqdm(range(100)):
-        ik_solver.step()
+    
+    if iter_num is None:
+        loss = 999999
+        while loss > 2e-5:
+            ik_solver.step()
+      
+    else:
+        for i in tqdm(range(iter_num)):
+            ik_solver.step()
+  
 
     cont6d = ik_solver.cont6d_params
     r_pos = ik_solver.r_pos

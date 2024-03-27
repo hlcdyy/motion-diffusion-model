@@ -18,7 +18,9 @@
                 // "save/my_inpainting_style_model/model000000000.pt",
                 // "save_bandai/my_inpainting_style_model_regularization_ddim20/model000000000.pt",
                 // "save_stylexia/my_inpainting_style_model/350angry_jumping/model000000000.pt"
-                "save_bandai_train/my_inpainting_style_model/dataset-2_raise-up-both-hands_masculine_021/model000000000.pt"
+                // "save_bandai_train/my_inpainting_style_model/dataset-2_raise-up-both-hands_masculine_021/model000000000.pt"
+                // "save_AIST/my_inpainting_style_model/gJS_sBM_cAll_d01_mJS3_ch02/model000000000.pt"
+                "save_bandai_train_newtpose/my_inpainting_style_model/dataset-2_raise-up-left-hand_masculine_003/model000000000.pt"
     
             ]
         },
@@ -200,7 +202,8 @@
             "args": [
                 "--save_dir",
                 // "save_bandai/my_motion_enc_512",
-                "save_bandai_train/my_motion_enc_512",
+                // "save_bandai_train/my_motion_enc_512",
+                "save_bandai_train_newtpose/my_motion_enc_512",
                 "--dataset",
                 "bandai-2_posrot",
                 "--overwrite",
@@ -216,7 +219,10 @@
                 "500",
                 "--mdm_path",
                 // "./save_bandai/my_inpainting_model_new/model000100000.pt"
-                "./save_bandai_train/my_inpainting_model_new/model000100000.pt"
+                // "./save_bandai_train/my_inpainting_model_new/model000100000.pt"
+                "./save_bandai_train_newtpose/my_inpainting_model/model000100000.pt"
+
+
             ]
         },
 
@@ -246,6 +252,34 @@
                 "500",
                 "--mdm_path",
                 "./save_stylexia/my_inpainting_model/model000050000.pt"
+            ]
+        },
+        {
+            "name": "Python: train_motion_encoder_AIST",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_motion_encoder",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save_AIST/my_motion_enc_512",
+                "--dataset",
+                "AIST_posrot",
+                "--overwrite",
+                "--train_platform_type",
+                "TensorboardPlatform",
+                // "--resume_checkpoint",
+                // "save/my_motion_enc_512"
+                "--num_steps",
+                "4_500",
+                "--save_interval",
+                "2_000",
+                "--log_interval",
+                "500",
+                "--mdm_path",
+                "./save_AIST/my_inpainting_model/model000100000.pt"
             ]
         },
 
@@ -310,6 +344,36 @@
                 "1000"
             ]
         },
+        {
+            "name": "Python: train_my_root_horizontal_model_on_AIST_fromscratch",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.train_root_horizontal_model_fromscratch", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save_AIST/my_inpainting_model",
+                "--dataset",
+                "AIST_posrot",
+                "--overwrite",
+                "--num_steps",
+                "100_000",
+                "--save_interval",
+                "10_000",
+                "--lr",
+                "1e-4",
+                "--train_platform_type",
+                "TensorboardPlatform",
+                "--log_interval",
+                "500",    
+                "--inpainting_mask",
+                "root_horizontal", 
+                "--diffusion_steps",
+                "1000"
+            ]
+        },
 
         {
             "name": "Python: train_my_root_horizontal_model_on_bandai_fromscratch",
@@ -322,7 +386,8 @@
             "args": [
                 "--save_dir",
                 // "save_bandai/my_inpainting_model_16diffsteps",
-                "save_bandai_train/my_inpainting_model_new",
+                // "save_bandai_train/my_inpainting_model_new",
+                "save_bandai_train_newtpose/my_inpainting_model",
                 "--dataset",
                 "bandai-2_posrot",
                 "--overwrite",
@@ -406,9 +471,9 @@
                 "stylexia_posrot",
                 "--overwrite",
                 "--num_steps",
-                "16",
+                "24",
                 "--save_interval",
-                "8",
+                "100",
                 "--lr",
                 "1e-4",
                 "--train_platform_type",
@@ -439,8 +504,9 @@
                 "--style_file",
                 // "350angry_jumping.npy"
                 // "012strutting_normal walking.npy"
-                "001angry_normal walking.npy",
-                
+                // "001angry_normal walking.npy",
+                "040depressed_normal walking.npy",
+             
 
             ]
         },
@@ -457,7 +523,8 @@
                 // "save/my_inpainting_style_model_regularization_cliptext",
                 // "save_bandai/my_inpainting_style_model_regularization_clipspace_ddim20",
                 // "save_bandai/my_inpainting_style_model",
-                "save_bandai_train/my_inpainting_style_model", 
+                // "save_bandai_train/my_inpainting_style_model", 
+                "save_bandai_train_newtpose/my_inpainting_style_model", 
                 "--dataset",
                 "bandai-2_posrot",
                 "--overwrite",
@@ -471,7 +538,8 @@
                 "TensorboardPlatform",
                 "--resume_checkpoint",
                 // "save_bandai/my_inpainting_style_model_regularization_ddim20/model_pretrained.pt",
-                "save_bandai_train/my_inpainting_style_model/model_pretrained.pt",
+                // "save_bandai_train/my_inpainting_style_model/model_pretrained.pt",
+                "save_bandai_train_newtpose/my_inpainting_style_model/model_pretrained.pt",
                 "--log_interval",
                 "10",    
                 "--inpainting_mask",
@@ -488,21 +556,75 @@
                 "--use_ddim",
                 "1",
                 "--mdm_path",
-                
                 // "./save_bandai/my_inpainting_model_new/model000100000.pt",
-                "./save_bandai_train/my_inpainting_model_new/model000100000.pt",
+                // "./save_bandai_train/my_inpainting_model_new/model000100000.pt",
+                "./save_bandai_train_newtpose/my_inpainting_model/model000100000.pt",
                 "--motion_enc_path",
                 // "./save_bandai/my_motion_enc_512/model000004545.pt",
                 // "./save_bandai_train/my_motion_enc_512/model000004545.pt",
-                "./save_bandai_train/my_motion_enc_512/model000004522.pt",
+                "./save_bandai_train_newtpose/my_motion_enc_512/model000004522.pt",
                 "--inpainting_model_path", 
                 "mdm_model is inpainting_model in this case.",
                 "--style_file",
                 // "dataset-2_raise-up-both-hands_masculine_021.npy"
-                "dataset-2_raise-up-left-hand_masculine_003.npy",
+                // "dataset-2_raise-up-left-hand_masculine_003.npy",
+                // "dataset-2_walk-turn-left_exhausted_010.npy",
+                // "dataset-2_walk_youthful_001.npy",
+                // "dataset-2_run_exhausted_015.npy",
+                "dataset-2_run_elderly_006.npy",
                 "--Ls",
                 "10",
-
+            ]
+        },
+        {
+            "name": "Python: finetune_my_diffusion_style_model_AIST",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "train.finetune_style_diffusion", //finetune the motion encoder on the style motion dataset
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--save_dir",
+                "save_AIST/my_inpainting_style_model", 
+                "--dataset",
+                "AIST_posrot",
+                "--overwrite",
+                "--num_steps",
+                "10",
+                "--save_interval",
+                "80",
+                "--lr",
+                "1e-4",
+                "--train_platform_type",
+                "TensorboardPlatform",
+                "--resume_checkpoint",
+                "save_AIST/my_inpainting_style_model/model_pretrained.pt",
+                "--log_interval",
+                "1",    
+                "--inpainting_mask",
+                "root_horizontal", 
+                "--diffusion_steps",
+                "1000",
+                "--skip_steps",
+                "700",
+                "--batch_size",
+                "64",
+                "--weakly_style_pair",
+                "1",
+                // "0",
+                "--use_ddim",
+                "1",
+                "--mdm_path",
+                "./save_AIST/my_inpainting_model/model000100000.pt",
+                "--motion_enc_path",
+                "./save_AIST/my_motion_enc_512/model000004575.pt",
+                "--inpainting_model_path", 
+                "mdm_model is inpainting_model in this case.",
+                "--style_file",
+                "gJS_sBM_cAll_d01_mJS3_ch02.npy",
+                "--Ls",
+                "10",
             ]
         },
 
@@ -1032,14 +1154,39 @@
                 "--model_path",
                 // "save_stylexia/my_inpainting_style_model/350angry_jumping/model000000024.pt",
                 // "save_stylexia/my_inpainting_style_model/012strutting_normal walking/model000000024.pt",
-                "save_stylexia/my_inpainting_style_model/001angry_normal walking_with_Ls/model000000024.pt",
-
+                // "save_stylexia/my_inpainting_style_model/001angry_normal walking_with_Ls/model000000024.pt",
+                // "save_stylexia/my_inpainting_style_model/001angry_normal walking/model000000024.pt",
+                "save_stylexia/my_inpainting_style_model/040depressed_normal walking/model000000032.pt",
                 "--num_samples",
                 "1",
                 "--input_text",
                 // "A man is normal walking neutral",
                 // "A person is punching strutting",
-                "A person is normal walking old",
+                // "A person is normal walking old",
+                // "A person is jumping depressed",
+                // "A person is running depressed",
+                "A person is kicking depressed",
+                "--seed",
+                "10",
+                "--use_ddim",
+                "1"
+            ]
+        },
+        {
+            "name": "Python: eval_inpainting_style_AIST",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "module": "sample.finetuned_motion_inpainting_style",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--model_path",
+                "save_AIST/my_inpainting_style_model/gJS_sBM_cAll_d01_mJS3_ch02/model000000075.pt",
+                "--num_samples",
+                "1",
+                "--input_text",
+                "A person is basic dancing inBreak style",
                 "--seed",
                 "10",
                 "--use_ddim",
@@ -1056,30 +1203,36 @@
             "justMyCode": true,
             "args": [
                 "--model_path",
-                // "save/my_inpainting_style_model_regularization_ddim20/M008551/model000001149.pt",
+                "save/my_inpainting_style_model_regularization_ddim20/M008551/model000001149.pt",
                 // "save_bandai/my_inpainting_style_model_regularization_ddim20/model000000135.pt",
                 // "save_bandai/my_inpainting_style_model_regularization_clipspace_ddim20/model000000135.pt",
                 // "save_bandai/my_inpainting_style_model/dataset-2_raise-up-both-hands_masculine_021/model000000135.pt",
                 // "save_bandai_train/my_inpainting_style_model/dataset-2_raise-up-both-hands_masculine_021/model000000114.pt",
                 // "save/my_inpainting_style_model_regularization_ddim20/skip_happy_best/model000000766.pt",
-                "save_bandai_train/my_inpainting_style_model/dataset-2_raise-up-left-hand_masculine_003/model000000114.pt",
-                
+                // "save_bandai_train/my_inpainting_style_model/dataset-2_raise-up-left-hand_masculine_003/model000000114.pt",
+                // "save_bandai_train_newtpose/my_inpainting_style_model/dataset-2_raise-up-left-hand_masculine_003/model000000114.pt",
+                // "save_bandai_train_newtpose/my_inpainting_style_model/dataset-2_walk-turn-left_exhausted_010/model000000114.pt",
+                // "save_bandai_train_newtpose/my_inpainting_style_model/dataset-2_walk_youthful_001/model000000114.pt",
+                // "save_bandai_train_newtpose/my_inpainting_style_model/dataset-2_run_exhausted_015/model000000114.pt",
 
                 "--num_samples",
                 "1",
                 "--input_text",
                 // "A person standing in place lifts and waves with his right hand.",
-                "A person walks with both hands up.",
+                // "A person walks with both hands up.",
                 // "A man runs turn right normal",
                 // "A person raise up right hand normal",
                 // "A person walks turn right feminine",
                 // "A person runs feminine",
                 // "A person walks masculine",
+                // "A person walks exhausted",
                 // "A figure waves left hand masculine",
+                // "A man waves both hands youthful",
+                "A man waves both hands exhausted",
                 "--seed",
                 "10",
                 "--use_ddim",
-                "1"
+                "1",
             ]
         },
         {
@@ -1262,14 +1415,41 @@
             "justMyCode": true,
             "args": [
                 "--model_path",
-                // "./save/my_humanml_trans_enc_512/model000050000.pt",
-                "./save_stylexia/my_inpainting_model/model000050000.pt",
+                "./save/my_humanml_trans_enc_512/model000200000.pt",
+                // "./save_stylexia/my_inpainting_model/model000050000.pt",
                 "--dataset",
-                // "humanml",
-                "stylexia_posrot",
+                "humanml",
+                // "stylexia_posrot",
                 "--text_prompt",
                 // "A person walks turn right feminine"
-                "A man is running childlike"
+                // "A man is running childlike"
+                "A person walks turning right.",
+                "--seed", 
+                "30"
+                
+            ]
+        },
+        {
+            "name": "Python: sample_t2m_AIST",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            // "program": "${command:python.interpreterPath}",
+            "module": "sample.generate",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--model_path",
+                // "./save/my_humanml_trans_enc_512/model000050000.pt",
+                "./save_AIST/my_inpainting_model/model000100000.pt",
+                "--dataset",
+                // "humanml",
+                "AIST_posrot",
+                "--text_prompt",
+                // "A person walks turn right feminine"
+                "A man is basic dancing in Lock style",
+                "--seed", 
+                "200"
                 
             ]
         },

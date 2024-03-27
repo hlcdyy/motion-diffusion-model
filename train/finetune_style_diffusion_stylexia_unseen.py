@@ -115,6 +115,7 @@ def main():
     input_motions = torch.Tensor(input_motions.T).unsqueeze(1).unsqueeze(0)
     input_motions = input_motions.to(dist_util.dev()) 
 
+    
     collate_args = [{'inp': torch.zeros(max_frames), 'tokens': None, 'lengths': m_length}] * 1
     if args.dataset == 'humanml':
         # caption = 'a figure skips in a circle'

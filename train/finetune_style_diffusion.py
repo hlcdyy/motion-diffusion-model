@@ -5,7 +5,7 @@ Train a diffusion model on images.
 
 import os
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import json
 from utils.fixseed import fixseed
 from data_loaders.humanml.scripts.motion_process import recover_from_ric
@@ -18,11 +18,12 @@ from train.train_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatfo
 import torch 
 from diffusion.inpainting_gaussian_diffusion import InpaintingGaussianDiffusion
 from data_loaders.tensors import collate
-from data_loaders.humanml.common.bvh_utils import remove_fs,fit_joints_bvh_quats
+from data_loaders.humanml.common.bvh_utils import remove_fs, fit_joints_bvh_quats, fit_joints_bvh
 from visualize.vis_utils import joints2bvh
 import data_loaders.humanml.utils.paramUtil as paramUtil
 from data_loaders.humanml.utils.plot_script import plot_3d_motion
-
+from data_loaders.humanml.common.skeleton import Skeleton
+from scipy import io
 
 
 def main():
@@ -36,7 +37,8 @@ def main():
             args.style_file = 'M008551.npy'
         path = os.path.join(motion_dir, args.style_file)
     elif args.dataset == 'bandai-2_posrot':
-        motion_dir = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/new_joint_vecs'
+        # motion_dir = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/new_joint_vecs'
+        motion_dir = '/data/hulei/Projects/Style100_2_HumanML/bandai-2_with_rotation_normaltpose/new_joint_vecs'
         if not args.style_file:
             args.style_file = 'dataset-2_walk-turn-right_feminine_018.npy'
         path = os.path.join(motion_dir, args.style_file)
@@ -45,7 +47,12 @@ def main():
         if not args.style_file:
             args.style_file = '350angry_jumping.npy'
         path = os.path.join(motion_dir, args.style_file)
-
+    elif args.dataset == 'AIST_posrot':
+        motion_dir = '/data/hulei/Projects/Style100_2_HumanML/AIST++_with_rotation/new_joint_vecs'
+        if not args.style_file:
+            args.style_file = 'gBR_sBM_cAll_d04_mBR0_ch02.npy'
+        path = os.path.join(motion_dir, args.style_file)
+        
     if args.save_dir is None:
         raise FileNotFoundError('save_dir was not specified.')
     elif os.path.exists(args.save_dir) and not args.overwrite:
@@ -63,7 +70,7 @@ def main():
     elif not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
 
-   
+    
     args_path = os.path.join(args.save_dir, 'args.json')
     with open(args_path, 'w') as fw:
         json.dump(vars(args), fw, indent=4, sort_keys=True)
@@ -74,13 +81,29 @@ def main():
     if args.dataset in ["bandai-1_posrot", "bandai-2_posrot"]:    
         data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split='train')
         from model.mdm_forstyledataset import StyleDiffusion
-        from data_loaders.bandai_posrot_utils import get_inpainting_mask
+        from data_loaders.bandai_posrot_utils import get_inpainting_mask, BVH_JOINT_NAMES
+        real_offset = paramUtil.bandai_real_offsets
+        skeleton = paramUtil.bandai_kinematic_chain
+        anim = Skeleton(torch.Tensor(paramUtil.bandai_raw_offsets), skeleton, dist_util.dev())
+        ee_names = ["Toes_R", 'Toes_L', 'Foot_L', 'Foot_R']
+
     elif args.dataset == "stylexia_posrot":
         data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split='train')
         from model.mdm_forstyledataset import StyleDiffusion
-        from data_loaders.stylexia_posrot_utils import get_inpainting_mask
+        from data_loaders.stylexia_posrot_utils import get_inpainting_mask, BVH_JOINT_NAMES
         real_offset = paramUtil.xia_real_offsets
         skeleton = paramUtil.xia_kinematic_chain
+        anim = Skeleton(torch.Tensor(paramUtil.xia_raw_offsets), skeleton, dist_util.dev())
+        ee_names = ["rtoes", 'ltoes', 'lfoot', 'rfoot']
+
+    elif args.dataset == 'AIST_posrot':
+        data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split='train')
+        from model.mdm_forstyledataset import StyleDiffusion
+        from data_loaders.humanml_posrot_utils import get_inpainting_mask, BVH_JOINT_NAMES
+        real_offset = paramUtil.smpl_real_offsets
+        skeleton = paramUtil.t2m_kinematic_chain
+        anim = Skeleton(torch.Tensor(paramUtil.smpl_raw_offsets), skeleton, dist_util.dev())
+
     else:
         data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split='train')
         from model.mdm import StyleDiffusion
@@ -88,7 +111,6 @@ def main():
         ee_names = ["R_Ankle", "L_Ankle", "L_Foot", "R_Foot"]
         real_offset = paramUtil.smpl_real_offsets
         skeleton = paramUtil.t2m_kinematic_chain
-
 
 
     print("creating model and diffusion...")
@@ -106,7 +128,7 @@ def main():
     #     print(motion.shape, normal_motion.shape)
     model.eval()
 
-    max_frames = 196 if args.dataset in ['kit', 'humanml', 'bandai-1_posrot', 'bandai-2_posrot'] else 60
+    max_frames = 196 if args.dataset in ['kit', 'humanml', 'bandai-1_posrot', 'bandai-2_posrot', 'AIST_posrot'] else 60
     max_frames = 76 if args.dataset == "stylexia_posrot" else max_frames  
     
     input_motions, m_length = data.dataset.t2m_dataset.process_np_motion(path)
@@ -140,11 +162,38 @@ def main():
             contents = args.style_file.split("_")[-1][:-4]
             style_label = args.style_file.split("_")[0][3:]
             caption = 'a person is ' + contents + " neutral"
- 
+
+    elif args.dataset == 'AIST_posrot':
+        Genres_dict = {
+            "gBR": "Break",
+            "gPO": "Pop",
+            "gLO": "Lock",
+            "gMH": "Middle Hip-hop",
+            "gLH": "LA style Hip-hop", 
+            "gHO": "House",
+            "gWA": "Waack",
+            "gKR": "Krump",
+            "gJS": "Street Jazz",
+            "gJB": "Ballet Jazz"
+        }
+
+        Situations_dict = {
+            "sBM": "basic dancing",
+            "sFM": "advanced dancing",
+        }
+        if not args.style_file:
+            caption = 'A man is basic dancing in Break style.'
+            style_label = 'Break'
+        else:
+            contents = Situations_dict[args.style_file.split("_")[1]]
+            style_label = Genres_dict[args.style_file.split("_")[0]]
+            caption = 'a person is ' + contents + " in" + " LA style Hip-hop style"
+
+
     texts = [caption] * 1
     collate_args = [dict(arg, text=txt) for arg, txt in zip(collate_args, texts)]
     _, model_kwargs = collate(collate_args)    
-    model_kwargs['y']['inpainted_motion'] = input_motions      
+    model_kwargs['y']['inpainted_motion'] = input_motions 
     model_kwargs['y']['inpainting_mask'] = torch.tensor(get_inpainting_mask(args.inpainting_mask, input_motions.shape)).float().to(dist_util.dev())
     model_kwargs['y']['scale'] = torch.ones(1, device=dist_util.dev()) * 2.5
 
@@ -199,6 +248,8 @@ def main():
             fit_joints_bvh_quats(bvh_save_path, real_offset, ref_motion[..., new_index, :])
 
         else:
+            sample_fn = inpainting_diffusion_ddpm.p_sample_loop
+            stop_timesteps = 900
             net = model.motion_enc.mdm_model
             sample = sample_fn(
             net,
@@ -215,8 +266,50 @@ def main():
             dump_all_xstart=True,
             )
             sample = sample[-1]
+            
+            joint_num = 21 if args.dataset == 'bandai-2_posrot' else 20
+            img = torch.randn(*sample.shape, device=dist_util.dev())
+            my_t = torch.ones([sample.shape[0]], device=dist_util.dev(), dtype=torch.long) * 701
+            noised_img = inpainting_diffusion_ddpm.q_sample(sample, my_t, img, model_kwargs=model_kwargs)
+            noised_denorm = data.dataset.t2m_dataset.inv_transform(noised_img.cpu().permute(0, 2, 3, 1)).float() # B 1 T J
+            noised_denorm_np = recover_from_ric(noised_denorm, joint_num)
+            noised_denorm_np = noised_denorm_np.view(-1, *noised_denorm_np.shape[2:]).permute(0, 2, 3, 1).cpu().numpy()
+            neutral_noised_motion = noised_denorm_np[0].transpose(2, 0, 1)[:m_length]
+            save_bvh = 'generated_noised_normal_motion.bvh'
+            bvh_save_path = os.path.join(args.save_dir, save_bvh)
+            with torch.enable_grad():
+                fit_joints_bvh(bvh_save_path, noised_denorm[0, 0, :m_length, :], joint_num, anim, real_offset, neutral_noised_motion, BVH_JOINT_NAMES, iter_num=100)
+            save_file = 'generated_noised_normal_motion{:02d}.mp4'.format(0)
+            animation_save_path = os.path.join(args.save_dir, save_file)
+            gt_frames_per_sample = {}
+            plot_3d_motion(animation_save_path, skeleton, neutral_noised_motion, title=caption,
+                dataset=args.dataset, fps=20, vis_mode='gt',
+                gt_frames=gt_frames_per_sample.get(0, []))
+            io.savemat(animation_save_path.replace('.mp4', '.mat'), 
+                       {"target_pos": neutral_noised_motion})
 
-        
+            sample_generated_content = data.dataset.t2m_dataset.inv_transform(sample.cpu().permute(0, 2, 3, 1)).float() # B 1 T J
+            sample_generated_content_np = recover_from_ric(sample_generated_content, joint_num)
+            sample_generated_content_np = sample_generated_content_np.view(-1, *sample_generated_content_np.shape[2:]).permute(0, 2, 3, 1).cpu().numpy()
+
+            ref_motion = sample_generated_content_np[0].transpose(2, 0, 1)[:m_length]
+            
+            ref_motion, _, _, _ = remove_fs("", ref_motion, ref_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=False, interp_length=3, use_window=False, use_vel3=True, vel3_thr=0.03, after_butterworth=True)
+            
+            save_bvh = 'generated_normal_motion.bvh'
+            bvh_save_path = os.path.join(args.save_dir, save_bvh)
+            with torch.enable_grad():
+                fit_joints_bvh(bvh_save_path, sample_generated_content[0, 0, :m_length, :], joint_num, anim, real_offset, ref_motion, BVH_JOINT_NAMES)
+
+            save_file = 'generated_normal_motion{:02d}.mp4'.format(0)
+            animation_save_path = os.path.join(args.save_dir, save_file)
+            gt_frames_per_sample = {}
+            plot_3d_motion(animation_save_path, skeleton, ref_motion, title=caption,
+                dataset=args.dataset, fps=20, vis_mode='gt',
+                gt_frames=gt_frames_per_sample.get(0, []))
+            
+
+
     model.train()
     data_style = ((sample.detach(), model_kwargs), )
     # for i in range(10):
@@ -252,6 +345,15 @@ def main():
                             caption.pop(-1)
                             caption.insert(-1, style_label)
                             caption = " ".join(caption)
+                            cond['y']['text'][i] = caption
+                elif args.dataset == 'AIST_posrot':
+                    if args.weakly_style_pair:
+                        for i in range(len(cond["y"]["text"])):
+                            caption = cond["y"]["text"][i].split(" ")
+                            start_indx = caption.index("dancing")
+                            caption = caption[:start_indx+1]
+                            new_style = style_label + " style"
+                            caption = " ".join(caption) + " in "+ new_style
                             cond['y']['text'][i] = caption
                 yield motion, cond
         
@@ -296,14 +398,14 @@ def main():
 
  
     if model.data_rep == 'hml_vec':
-        n_joints = 22 if sample.shape[1] == 263 else 21
+        n_joints = 22 if sample.shape[1] == 263 or 199 else 21
         sample = data.dataset.t2m_dataset.inv_transform(sample.cpu().permute(0, 2, 3, 1)).float()
         sample = recover_from_ric(sample, n_joints)
         sample = sample.view(-1, *sample.shape[2:]).permute(0, 2, 3, 1)
         sample = sample.cpu().numpy() 
 
         
-    motion = sample[0].transpose(2, 0, 1)[:]
+    motion = sample[0].transpose(2, 0, 1)[:m_length]
     save_file = 'style_transfer_example{:02d}.mp4'.format(0)
     animation_save_path = os.path.join(args.save_dir, save_file)
     gt_frames_per_sample = {}

@@ -17,6 +17,8 @@ import data_loaders.humanml.utils.paramUtil as paramUtil
 from data_loaders.humanml.utils.plot_script import plot_3d_motion
 import shutil
 from data_loaders.tensors import collate
+from visualize.vis_utils import joints2bvh
+from data_loaders.humanml.common.skeleton import Skeleton
 
 
 def main():
@@ -25,7 +27,7 @@ def main():
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
-    max_frames = 196 if args.dataset in ['kit', 'humanml', "bandai-1_posrot", "bandai-2_posrot"] else 60
+    max_frames = 196 if args.dataset in ['kit', 'humanml', "bandai-1_posrot", "bandai-2_posrot", "AIST_posrot"] else 60
     max_frames = 76 if args.dataset == 'stylexia_posrot' else max_frames
     fps = 12.5 if args.dataset == 'kit' else 20
     n_frames = min(max_frames, int(args.motion_length*fps))
@@ -74,11 +76,13 @@ def main():
     print("Creating model and diffusion...")
     
 
-    if args.dataset in ['bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot']:
+    if args.dataset in ['bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot', "AIST_posrot"]:
         from model.mdm_forstyledataset import MDM as MDM1
         model, inpainting_diffusion, normal_diffusion = creat_serval_diffusion(args, ModelClass=MDM1)
-        data_dir = '/data/hulei/Projects/Style100_2_HumanML/style_xia_with_rotation/new_joint_vecs'
-        inpainting_path = '282childlike_running.npy'
+        # data_dir = '/data/hulei/Projects/Style100_2_HumanML/style_xia_with_rotation/new_joint_vecs'
+        # inpainting_path = '282childlike_running.npy'
+        data_dir = '/data/hulei/Projects/Style100_2_HumanML/AIST++_with_rotation/new_joint_vecs'
+        inpainting_path = 'gLH_sBM_cAll_d17_mLH4_ch02.npy'
         
         inpainting_motions, style_m_length = data.dataset.t2m_dataset.process_np_motion(os.path.join(data_dir, inpainting_path))
         inpainting_motions = torch.Tensor(inpainting_motions.T).unsqueeze(1).unsqueeze(0)
@@ -87,6 +91,12 @@ def main():
         
     else:
         model, diffusion = create_model_and_diffusion(args, data)
+        skeleton = paramUtil.t2m_kinematic_chain
+        real_offset = paramUtil.smpl_real_offsets
+        ee_names = ["R_Ankle", "L_Ankle", "L_Foot", "R_Foot"]
+        anim = Skeleton(torch.Tensor(paramUtil.smpl_raw_offsets), skeleton, dist_util.dev())
+        from data_loaders.humanml_utils import BVH_JOINT_NAMES
+
 
     print(f"Loading checkpoints from [{args.model_path}]...")
     state_dict = torch.load(args.model_path, map_location='cpu')
@@ -124,8 +134,11 @@ def main():
         if args.guidance_param != 1:
             model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
 
-        if args.dataset == "stylexia_posrot":
-            from data_loaders.stylexia_posrot_utils import get_inpainting_mask
+        if args.dataset in ["stylexia_posrot", "AIST_posrot"]:
+            if args.dataset == "stylexia_posrot":
+                from data_loaders.stylexia_posrot_utils import get_inpainting_mask
+            elif args.dataset == "AIST_posrot":
+                from data_loaders.humanml_posrot_utils import get_inpainting_mask
             args.inpainting_mask = 'root_horizontal'
             model_kwargs['y']['inpainted_motion'] = inpainting_motions
             model_kwargs['y']['inpainting_mask'] = torch.tensor(get_inpainting_mask(args.inpainting_mask, inpainting_motions.shape)).float().to(dist_util.dev())
@@ -171,11 +184,11 @@ def main():
             if args.dataset == "stylexia_posrot":
                 n_joints = 20
             else:
-                n_joints = 22 if sample.shape[1] == 263 else 21
+                n_joints = 22 if sample.shape[1] == 263 or 199 else 21
             sample = data.dataset.t2m_dataset.inv_transform(sample.cpu().permute(0, 2, 3, 1)).float()
             sample = recover_from_ric(sample, n_joints)
             sample = sample.view(-1, *sample.shape[2:]).permute(0, 2, 3, 1)
-
+           
         rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
         rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
         sample = model.rot2xyz(x=sample, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
@@ -233,6 +246,10 @@ def main():
             print(sample_print_template.format(caption, sample_i, rep_i, save_file))
             animation_save_path = os.path.join(out_path, save_file)
             plot_3d_motion(animation_save_path, skeleton, motion, dataset=args.dataset, title=caption, fps=fps)
+            if args.dataset == 'humanml':
+                bvh_save_path = animation_save_path.replace('.mp4', '.bvh')
+                joints2bvh(bvh_save_path, motion, real_offset, skeleton, names=BVH_JOINT_NAMES, num_smplify_iters=100)
+
             # Credit for visualization: https://github.com/EricGuo5513/text-to-motion
             rep_files.append(animation_save_path)
 

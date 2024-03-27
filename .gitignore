@@ -13,6 +13,8 @@ eval_ablation/
 eval_neutral/
 eval_results/
 userstudy/
+save_AIST/
+save_bandai_train_newtpose/
 
 # Byte-compiled / optimized / DLPL files
 __pycache__/

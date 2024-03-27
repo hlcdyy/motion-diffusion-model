@@ -157,8 +157,12 @@ def inpainting_style_onstyledataset():
     # output_path = './save_bandai/my_inpainting_style_model_regularization_ddim20/model_pretrained.pt'
     # pretrained_model = './save_stylexia/my_inpainting_model/model000050000.pt'
     # output_path = './save_stylexia/my_inpainting_style_model/model_pretrained.pt'
-    pretrained_model = './save_bandai_train/my_inpainting_model_new/model000100000.pt'
-    output_path = './save_bandai_train/my_inpainting_style_model/model_pretrained.pt'
+    # pretrained_model = './save_bandai_train/my_inpainting_model_new/model000100000.pt'
+    # output_path = './save_bandai_train/my_inpainting_style_model/model_pretrained.pt'
+    # pretrained_model = './save_AIST/my_inpainting_model/model000100000.pt'
+    # output_path = './save_AIST/my_inpainting_style_model/model_pretrained.pt'
+    pretrained_model = './save_bandai_train_newtpose/my_inpainting_model/model000100000.pt'
+    output_path = './save_bandai_train_newtpose/my_inpainting_style_model/model_pretrained.pt'
     
 
     args = eval_inpainting_style_args()

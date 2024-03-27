@@ -45,7 +45,7 @@ def create_model_and_diffusion(args, data):
     return model, diffusion
 
 def create_motion_encoder(args, data):
-    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot"]:
+    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot", "AIST_posrot"]:
         from model.mdm_forstyledataset import MotionEncoder as MotionEncoder1
         model = MotionEncoder1(**get_model_args(args, data))
     else:
@@ -129,6 +129,11 @@ def get_model_args(args, data):
         data_rep = 'hml_vec'
         njoints = 181
         nfeats = 1
+    
+    elif args.dataset == 'AIST_posrot':
+        data_rep = 'hml_vec'
+        njoints = 199
+        nfeats = 1
 
     
     if hasattr(args, 'mdm_path'):
@@ -192,6 +197,11 @@ def get_transfer_args(args):
     elif args.dataset == 'stylexia_posrot':
         data_rep = 'hml_vec'
         njoints = 181
+        nfeats = 1
+
+    elif args.dataset == 'AIST_posrot':
+        data_rep = 'hml_vec'
+        njoints = 199
         nfeats = 1
 
     

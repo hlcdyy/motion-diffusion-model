@@ -22,7 +22,7 @@ def get_dataset_class(name):
         from data_loaders.humanml.data.dataset import HumanML3D_Style
         return HumanML3D_Style
     
-    elif name in ['bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot']:
+    elif name in ['bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot', 'AIST_posrot']:
         from data_loaders.humanml.data.dataset import StyleDataset
         return StyleDataset
     else:
@@ -34,7 +34,7 @@ def get_collate_fn(name, hml_mode='train', pairs=False):
         return t2m_eval_collate
     if name in ["humanml", "kit"]:
         return t2m_collate
-    if name in ['style100', 'bandai-1', 'bandai-2', 'bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot']:
+    if name in ['style100', 'bandai-1', 'bandai-2', 'bandai-1_posrot', 'bandai-2_posrot', 'stylexia_posrot', 'AIST_posrot']:
         if not pairs:
             return t2m_style_collate
         else:
@@ -48,7 +48,7 @@ def get_dataset(name, num_frames, split='train', hml_mode='train', pairs=False):
     if name in ["humanml", "kit", "style100"]:
         # The num_frames will be ignored when used humanML and Kit dataset
         dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode)
-    elif name in ["bandai-1", "bandai-2", "bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot", "stylexia_posrot"]:
+    elif name in ["bandai-1", "bandai-2", "bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot", "AIST_posrot"]:
         dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode, dataset_name=name, pairs=pairs)
     else:
         dataset = DATA(split=split, num_frames=num_frames)

@@ -5,7 +5,7 @@ Train a diffusion model on images.
 
 import os
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import json
 from utils.fixseed import fixseed
 from utils.parser_util import eval_inpainting_style_args
@@ -28,6 +28,20 @@ from data_loaders.humanml.common.bvh_utils import output_bvh_from_real_rot, remo
 from visualize.vis_utils import joints2rotation, joints2bvh
 from scipy import io
 
+Genres_dict = {
+            "gBR": "Break",
+            "gPO": "Pop",
+            "gLO": "Lock",
+            "gMH": "Middle Hip-hop",
+            "gLH": "LA style Hip-hop", 
+            "gHO": "House",
+            "gWA": "Waack",
+            "gKR": "Krump",
+            "gJS": "Street Jazz",
+            "gJB": "Ballet Jazz"
+        }
+
+
 def main():
     output_bvh = False
     args = eval_inpainting_style_args()
@@ -35,7 +49,7 @@ def main():
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
-    max_frames = 196 if args.dataset in ['kit', 'humanml',"bandai-1_posrot", "bandai-2_posrot"] else 60
+    max_frames = 196 if args.dataset in ['kit', 'humanml',"bandai-1_posrot", "bandai-2_posrot", "AIST_posrot"] else 60
     max_frames = 76 if args.dataset == "stylexia_posrot" else max_frames
     fps = 12.5 if args.dataset == 'kit' else 20
     dist_util.setup_dist(args.device)
@@ -49,19 +63,19 @@ def main():
 
     print("creating data loader...")
     args.batch_size = args.num_samples
-    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot"]:
+    if args.dataset in ["bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot", "AIST_posrot"]:
         from model.mdm_forstyledataset import StyleDiffusion
         if args.dataset == 'stylexia_posrot':
             from data_loaders.stylexia_posrot_utils import get_inpainting_mask, BVH_JOINT_NAMES
-            data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=max_frames, split='test')
+        elif args.dataset == 'AIST_posrot':
+            from data_loaders.humanml_posrot_utils import get_inpainting_mask, BVH_JOINT_NAMES
         else:
             from data_loaders.bandai_posrot_utils import get_inpainting_mask, BVH_JOINT_NAMES
-            data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=max_frames, split='test')
-        
+
     else:
         from data_loaders.humanml_utils import get_inpainting_mask, BVH_JOINT_NAMES
         from model.mdm import StyleDiffusion
-        data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=max_frames, split='test')
+    data = get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=max_frames, split='test')
     
     # iteration = iter(data)
     # sample_t2m, model_kwargs = next(iteration)
@@ -94,8 +108,11 @@ def main():
 
     if args.dataset == 'humanml':
         motion_dir = '/data/hulei/OpenProjects/HumanML3D/HumanML3D/new_joint_vecs'
+        # motion_dir = '/data/hulei/Projects/Style100_2_HumanML/style_xia_humanml/smpl_joint_vecs'
+
         if not args.style_file:
             args.style_file = 'M008551.npy'
+        # args.style_file = '392neutral_jumping.npy'
         path = os.path.join(motion_dir,args.style_file)
         joint_num = 22
 
@@ -105,8 +122,15 @@ def main():
             args.style_file = '350angry_jumping.npy'
         path = os.path.join(motion_dir,args.style_file)
         joint_num = 20
+    elif args.dataset == 'AIST_posrot':
+        motion_dir = '/data/hulei/Projects/Style100_2_HumanML/AIST++_with_rotation/new_joint_vecs'
+        if not args.style_file:
+            args.style_file = 'gBR_sBM_cAll_d04_mBR0_ch02.npy'
+        path = os.path.join(motion_dir,args.style_file)
+        joint_num = 22
     else:
-        motion_dir = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/new_joint_vecs'
+        # motion_dir = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/new_joint_vecs'
+        motion_dir = '/data/hulei/Projects/Style100_2_HumanML/bandai-2_with_rotation_normaltpose/new_joint_vecs'
         if not args.style_file:
             args.style_file = 'dataset-2_walk-turn-right_feminine_018.npy'
         path = os.path.join(motion_dir, args.style_file)
@@ -114,7 +138,7 @@ def main():
 
     if args.dataset == 'kit':
         skeleton = paramUtil.kit_kinematic_chain
-    elif args.dataset == 'humanml':
+    elif args.dataset in ['humanml', 'AIST_posrot']:
         skeleton = paramUtil.t2m_kinematic_chain
         real_offset = paramUtil.smpl_real_offsets
         ee_names = ["R_Ankle", "L_Ankle", "L_Foot", "R_Foot"]
@@ -138,6 +162,29 @@ def main():
     input_motions = torch.Tensor(input_motions.T).unsqueeze(1).unsqueeze(0)
     input_motions = input_motions.to(dist_util.dev()) 
 
+    sample_t2m_denorm = data.dataset.t2m_dataset.inv_transform(input_motions.cpu().permute(0, 2, 3, 1)).float() # B 1 T J
+    sample_t2m_np = recover_from_ric(sample_t2m_denorm, joint_num)
+    sample_t2m_np = sample_t2m_np.view(-1, *sample_t2m_np.shape[2:]).permute(0, 2, 3, 1).cpu().numpy()
+    #  B J 3 T
+    if args.input_text != '':
+        texts = [args.input_text] * args.num_samples
+    else:
+        texts = ["A person is jumping neutral."] * args.num_sample
+    collate_args = [{'inp': torch.zeros(max_frames), 'tokens': None, 'lengths': style_m_length}] * 1 # m_length
+    collate_args = [dict(arg, text=txt) for arg, txt in zip(collate_args, texts)]
+    _, model_kwargs = collate(collate_args)
+
+    img = torch.randn(*input_motions.shape, device=dist_util.dev())
+    my_t = torch.ones([input_motions.shape[0]], device=dist_util.dev(), dtype=torch.long) * 701
+    noised_img = normal_diffusion.q_sample(input_motions, my_t, img, model_kwargs=model_kwargs)
+    noised_denorm = data.dataset.t2m_dataset.inv_transform(noised_img.cpu().permute(0, 2, 3, 1)).float() # B 1 T J
+    noised_denorm_np = recover_from_ric(noised_denorm, joint_num)
+    noised_denorm_np = noised_denorm_np.view(-1, *noised_denorm_np.shape[2:]).permute(0, 2, 3, 1).cpu().numpy()
+    ref_noised_motion = noised_denorm_np[0].transpose(2, 0, 1)[:style_m_length]
+    save_bvh = 'input_noised_motion.bvh'
+    bvh_save_path = os.path.join(out_path, save_bvh)
+    joints2bvh(bvh_save_path, ref_noised_motion, real_offset, skeleton, names=BVH_JOINT_NAMES, num_smplify_iters=150)
+    
     if args.dataset == 'humanml':
         collate_args = [{'inp': torch.zeros(max_frames), 'tokens': None, 'lengths': style_m_length}] * 1
         caption = 'a figure skips in a circle'
@@ -166,19 +213,25 @@ def main():
             const_noise=False,
         )
         m_length = style_m_length
-    elif args.dataset in ["bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot"]:
+    elif args.dataset in ["bandai-1_posrot", "bandai-2_posrot", "stylexia_posrot", "AIST_posrot"]:
         if args.dataset == "stylexia_posrot":
             # path = os.path.join(motion_dir, '029neutral_normal walking.npy')
             # path = os.path.join(motion_dir, '409proud_punching.npy')
             # path = os.path.join(motion_dir, '021old_normal walking.npy')
             # path = os.path.join(motion_dir, '286depressed_running.npy')
-            path = os.path.join(motion_dir, '005childlike_normal walking.npy')
+            # path = os.path.join(motion_dir, '005childlike_normal walking.npy')
+            # path = os.path.join(motion_dir, '392neutral_jumping.npy')
+            # path = os.path.join(motion_dir, '307neutral_running.npy')
+            path = os.path.join(motion_dir, '539neutral_kicking.npy')
+        elif args.dataset == 'AIST_posrot':
+            path = os.path.join(motion_dir, 'gBR_sBM_cAll_d04_mBR0_ch02.npy')
         else:
             # path = os.path.join(motion_dir, 'dataset-2_run_normal_009.npy')
             # path = os.path.join(motion_dir, 'dataset-2_walk_normal_009.npy')
             # path = os.path.join(motion_dir, 'dataset-2_wave-left-hand_normal_001.npy')
-            path = os.path.join(motion_dir, 'dataset-2_wave-right-hand_normal_002.npy')
+            # path = os.path.join(motion_dir, 'dataset-2_wave-right-hand_normal_002.npy')
             # path = os.path.join(motion_dir, 'dataset-2_raise-up-right-hand_normal_003.npy')
+            path = os.path.join(motion_dir, 'dataset-2_wave-both-hands_normal_003.npy')
             # path = os.path.join(motion_dir, 'dataset-2_walk_normal_011.npy')
             # path = os.path.join(motion_dir, 'dataset-2_walk-turn-right_normal_003.npy')
 
@@ -188,7 +241,6 @@ def main():
         sample_t2m = sample_t2m.to(dist_util.dev())
 
         
-
         if args.input_text != '':
             texts = [args.input_text] * args.num_samples
         else:
@@ -203,23 +255,33 @@ def main():
         sample_t2m_np = sample_t2m_np.view(-1, *sample_t2m_np.shape[2:]).permute(0, 2, 3, 1).cpu().numpy()
         #  B J 3 T
         
-        # img = torch.randn(*sample_t2m.shape, device=dist_util.dev())
-        # my_t = torch.ones([sample_t2m.shape[0]], device=dist_util.dev(), dtype=torch.long) * 950
-        # noised_img = normal_diffusion.q_sample(sample_t2m, my_t, img, model_kwargs=model_kwargs)
-        # noised_denorm = data.dataset.t2m_dataset.inv_transform(noised_img.cpu().permute(0, 2, 3, 1)).float() # B 1 T J
-        # noised_denorm = recover_from_ric(noised_denorm, joint_num)
-        # noised_denorm = noised_denorm.view(-1, *noised_denorm.shape[2:]).permute(0, 2, 3, 1).cpu().numpy()
-        # ref_noised_motion = noised_denorm[0].transpose(2, 0, 1)[:m_length]
-        # save_bvh = 'input_noised_motion.bvh'
-        # bvh_save_path = os.path.join(out_path, save_bvh)
+        img = torch.randn(*sample_t2m.shape, device=dist_util.dev())
+        my_t = torch.ones([sample_t2m.shape[0]], device=dist_util.dev(), dtype=torch.long) * 701
+        noised_img = normal_diffusion.q_sample(sample_t2m, my_t, img, model_kwargs=model_kwargs)
+        noised_denorm = data.dataset.t2m_dataset.inv_transform(noised_img.cpu().permute(0, 2, 3, 1)).float() # B 1 T J
+        noised_denorm_np = recover_from_ric(noised_denorm, joint_num)
+        noised_denorm_np = noised_denorm_np.view(-1, *noised_denorm_np.shape[2:]).permute(0, 2, 3, 1).cpu().numpy()
+        ref_noised_motion = noised_denorm_np[0].transpose(2, 0, 1)[:m_length]
+        save_bvh = 'input_noised_motion.bvh'
+        bvh_save_path = os.path.join(out_path, save_bvh)
         # joints2bvh(bvh_save_path, ref_noised_motion, real_offset, skeleton, names=BVH_JOINT_NAMES, num_smplify_iters=150)
+        fit_joints_bvh(bvh_save_path, noised_denorm[0, 0, :m_length, :], joint_num, anim, real_offset, ref_noised_motion, BVH_JOINT_NAMES, iter_num=100)
+        save_file = 'input_noised_motion.mp4'
+        animation_save_path = os.path.join(out_path, save_file)
+        gt_frames_per_sample = {}
+        plot_3d_motion(animation_save_path, skeleton, ref_noised_motion, title="input noised motion",
+            dataset=args.dataset, fps=20, vis_mode='gt',
+            gt_frames=gt_frames_per_sample.get(0, []))
+        io.savemat(animation_save_path.replace('.mp4', '.mat'), 
+                    {"target_pos": ref_noised_motion})
+
 
         save_bvh = 'input_content_motion.bvh'
         bvh_save_path = os.path.join(out_path, save_bvh)
         # output_bvh_from_real_rot(bvh_save_path, sample_t2m_np[0][0][:m_length], joint_num, skeleton, real_offset, BVH_JOINT_NAMES)
         
         ref_motion = sample_t2m_np[0].transpose(2, 0, 1)[:m_length]
-        if args.dataset == 'humanml':
+        if args.dataset in ['humanml', 'AIST_posrot']:
             ref_motion, _, _, _ = remove_fs("", ref_motion, ref_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=False,use_vel3=True, vel3_thr=0.02, after_butterworth=True)
             
         if args.dataset != 'humanml':
@@ -341,10 +403,12 @@ def main():
 
     length = all_lengths[0]
     fs_motion = all_motions[0].transpose(2, 0, 1)[:length].copy()
-    # fs_motion, foot_vels, contacts, butter_motion = remove_fs("", fs_motion, fs_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=False, use_butterworth=True, use_vel3=True, interp_length=2, vel3_thr=0.03, after_butterworth=False)
-    fs_motion, foot_vels, contacts, butter_motion = remove_fs("", fs_motion, ref_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=True, after_butterworth=True, use_vel3=True, vel3_thr=0.05)
+    if args.dataset == 'AIST_posrot':
+        fs_motion, foot_vels, contacts, butter_motion = remove_fs("", fs_motion, fs_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=False, use_butterworth=True, use_vel3=True, interp_length=3, vel3_thr=0.03, after_butterworth=True)
+    else:
+        fs_motion, foot_vels, contacts, butter_motion = remove_fs("", fs_motion, ref_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=True, after_butterworth=True, use_vel3=True, vel3_thr=0.05)
 
-    fs_motion, foot_vels, contacts, butter_motion = remove_fs("", fs_motion, fs_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=True, after_butterworth=True, use_vel3=True, vel3_thr=0.05)
+        fs_motion, foot_vels, contacts, butter_motion = remove_fs("", fs_motion, fs_motion, BVH_JOINT_NAMES, ee_names, force_on_floor=True, after_butterworth=True, use_vel3=True, vel3_thr=0.05)
     # rotations = joints2rotation(fs_motion, 150) # [1, 25, 6, length] 24 joint rota + root trans
 
     save_bvh = 'out_transferred_motion.bvh'

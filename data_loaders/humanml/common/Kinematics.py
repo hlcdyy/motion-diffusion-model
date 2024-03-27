@@ -28,7 +28,8 @@ def recover_root_rot_pos_this(data):
 
 
 class InverseKinematics_hmlvec:
-    def __init__(self, data, joints_num, skeleton, real_offsets, constraints):
+    def __init__(self, data, joints_num, skeleton, real_offsets, constraints, use_lbfgs=False):
+       
         r_rot_quat, r_pos = recover_root_rot_pos_this(data)
         cont6d_params = data[..., 4 + (joints_num-1) * 3:].reshape(data.shape[:-1] + (joints_num, 6))
         self.cont6d_params = cont6d_params
@@ -36,25 +37,52 @@ class InverseKinematics_hmlvec:
         self.r_rot_quat = r_rot_quat
         self.skeleton = skeleton
         self.offset = torch.Tensor(real_offsets)
+        self.use_lbfgs = use_lbfgs
 
-        self.cont6d_params.requires_grad_(True)
         self.r_pos.requires_grad_(True)
+        self.cont6d_params.requires_grad_(True)
         self.r_rot_quat.requires_grad_(True)
 
         self.constraints = constraints
+        if use_lbfgs:
+            self.optimizer = torch.optim.LBFGS([self.cont6d_params, self.r_pos, self.r_rot_quat], max_iter=10,
+                                                 lr=1e-2, line_search_fn=None)
+        else:
+            self.optimizer = torch.optim.Adam([self.cont6d_params, self.r_pos, self.r_rot_quat], lr=1e-3, betas=(0.9, 0.999))
+            # self.optimizer = torch.optim.SparseAdam([self.cont6d_params, self.r_pos, self.r_rot_quat], lr=1e-3)
+            
 
-        self.optimizer = torch.optim.Adam([self.cont6d_params, self.r_pos, self.r_rot_quat], lr=1e-3, betas=(0.9, 0.999))
         self.crit = nn.MSELoss()
 
-    def step(self):
-        self.optimizer.zero_grad()
+    def gmof(self, x, sigma):
+        """
+        Geman-McClure error function
+        """
+        x_squared = x ** 2 
+        sigma_squared = sigma ** 2
+        return (sigma_squared * x_squared) / (sigma_squared + x_squared)
 
-        glb = self.forward(self.cont6d_params, self.r_pos, self.r_rot_quat)
-        loss = self.crit(glb, self.constraints)
-        loss.backward()
-        self.optimizer.step()
-        self.glb = glb
-        return loss.item()
+    def step(self):
+        if not self.use_lbfgs:
+            self.optimizer.zero_grad()
+            glb = self.forward(self.cont6d_params, self.r_pos, self.r_rot_quat)
+            # loss = self.crit(glb, self.constraints)
+            loss = self.gmof(glb-self.constraints, 100).sum(-1).sum(-1).sum(-1)
+            loss.backward()
+            self.optimizer.step()
+            self.glb = glb
+            return loss.item()
+        else:
+            def closure():
+                self.optimizer.zero_grad()
+                glb = self.forward(self.cont6d_params, self.r_pos, self.r_rot_quat)
+                # loss = self.crit(glb, self.constraints) * (500**2)
+                loss = self.gmof(glb-self.constraints, 100).sum(-1).sum(-1).sum(-1)
+                loss.backward()
+                print(loss.item())
+                return loss
+            self.optimizer.step(closure)
+
     
     def forward(self, cont6d_params, r_pos, r_rot_quat):
         

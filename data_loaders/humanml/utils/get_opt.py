@@ -82,7 +82,7 @@ def get_opt(opt_path, device):
         if opt.dataset_name == 'bandai-1':
             opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-1/'
         else:
-            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2/'
+            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2/' # for the old tpose save_bandai and save_bandai_train
         opt.t2m_root = '/data/hulei/OpenProjects/HumanML3D/HumanML3D'
         opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
         opt.joints_num = 22
@@ -93,8 +93,9 @@ def get_opt(opt_path, device):
         if opt.dataset_name == 'bandai-1_posrot':
             opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-1_with_rotation/'
         else:
-            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/'
-        opt.t2m_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/'
+            # opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/Bandai-Namco-Research-Motiondataset-2_with_rotation/'  # for the old tpose save_bandai and save_bandai_train
+            opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/bandai-2_with_rotation_normaltpose/'  # for new model save_bandai_train_newtpose
+        opt.t2m_root = '/data/hulei/Projects/Style100_2_HumanML/bandai-2_with_rotation_normaltpose/'
         opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
         opt.joints_num = 21
         opt.dim_pose = 190
@@ -108,6 +109,14 @@ def get_opt(opt_path, device):
         opt.joints_num = 20
         opt.dim_pose = 181
         opt.max_motion_length = 76
+
+    elif opt.dataset_name == 'AIST_posrot':
+        opt.data_root = '/data/hulei/Projects/Style100_2_HumanML/AIST++_with_rotation/'
+        opt.t2m_root = '/data/hulei/Projects/Style100_2_HumanML/AIST++_with_rotation/'
+        opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
+        opt.joints_num = 22
+        opt.dim_pose = 199
+        opt.max_motion_length = 196
     
     else:
         raise KeyError('Dataset not recognized')
